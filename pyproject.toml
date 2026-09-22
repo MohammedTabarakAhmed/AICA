@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aica"
+version = "0.0.1"
+description = "Enterprise AI Coding Assistant Agent (implementation of the Enhanced AI Coding Agent BRD v3)"
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = [
+  "pydantic>=2.9,<3",
+  "httpx>=0.27,<1",
+]
+
+[project.scripts]
+aica = "aica.cli:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-cov>=6.0,<7",
+  "ruff>=0.8,<1",
+  "mypy>=1.13,<2",
+]
+# WEB-001..006. Kept optional: the browser tools import playwright lazily and report a clear
+# install hint when it is absent, so the core install stays small.
+browser = [
+  "playwright>=1.48,<2",
+  "pytest-playwright>=0.5,<1",
+]
+# DB-001..007. SQLite needs nothing (stdlib); PostgreSQL needs a driver.
+postgres = [
+  "psycopg[binary]>=3.1,<4",
+]
+# API-001..011. The HTTP surface; the CLI and library work without it.
+api = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.32,<1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# tests/ holds unit tests; tests/integration holds the cross-module suite (TEST-003).
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["integration: cross-module test over real files, Git and processes (TEST-003)"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "N", "W"]
+# E501 is handled by `ruff format`; it only fires on strings the formatter cannot split
+# (SQL statements, prompts, help text), where wrapping hurts readability.
+ignore = ["S101", "N818", "E501"]  # S101: assert in tests; N818: exception names read better without Error suffix
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["aica"]
+
+# Optional drivers/extras: the code imports them lazily and degrades with a clear message,
+# so their absence must not fail the type check of a core install.
+[[tool.mypy.overrides]]
+module = ["psycopg.*"]
+ignore_missing_imports = true

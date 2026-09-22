@@ -1,0 +1,44 @@
+# Environments / secrets
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Node
+node_modules/
+.npm/
+
+# IDE / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# Tool state
+.claude/settings.local.json
+.aica/
+
+# Local database configuration: real connection targets, never committed.
+# config/databases.toml.example is the template that is.
+config/databases.toml
+var/
