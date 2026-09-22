@@ -1,0 +1,32 @@
+# Approved MCP servers (MCP-001, MCP-007). Copy to config/mcp.toml to enable them.
+#
+# Rules enforced by the loader and the tool wrapper:
+#   - A server is started from THIS file's command. A model can never name a new one.
+#   - The command runs with a fixed argv, never through a shell: no pipes, no redirection.
+#     Put arguments in args = [...].
+#   - The server process gets only a minimal base environment plus what you list in `env`
+#     and `env_passthrough`; it does not inherit your other credentials.
+#   - Tools appear as `mcp.<server>.<tool>`, so a server cannot shadow a built-in tool.
+#   - trusted = false (the default) means every call passes the "external" approval gate.
+#   - The tool group is called "mcp"; it is NOT in the default policy allowed_tools, so add
+#     it to config/policy.toml [autonomy].allowed_tools before the agent may use these.
+
+[[servers]]
+name = "filesystem-docs"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "./docs"]
+trusted = false
+enabled = false
+description = "example: a filesystem server scoped to ./docs"
+
+[[servers]]
+name = "internal-tools"
+command = "python"
+args = ["-m", "our_company.mcp_server"]
+env_passthrough = ["INTERNAL_API_TOKEN"]   # forwarded by name; the value stays in the env
+cwd = "."
+trusted = false
+enabled = false
+startup_timeout_seconds = 20.0
+call_timeout_seconds = 60.0
+description = "example: an organization-specific server (MCP-007)"

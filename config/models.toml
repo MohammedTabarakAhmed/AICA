@@ -1,0 +1,39 @@
+# Model configuration (MVP: one default model; the list form is the seed of the MM-001 registry).
+# Credentials are NEVER stored here: api_key_env names the environment variable to read.
+# The endpoint host must be present in config/policy.toml [network].allowed_hosts (SAFE-005).
+default = "deepseek-chat"
+
+[[models]]
+name = "deepseek-chat"
+provider = "openai_compatible"
+family = "deepseek"
+version = "deepseek-chat"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+context_window = 128000
+capabilities = ["chat", "streaming", "tools", "fim"]
+timeout_seconds = 120.0
+enabled = true
+
+# Examples for Release 1 (disabled until approved/deployed):
+[[models]]
+name = "glm-4"
+provider = "openai_compatible"
+family = "glm"
+version = "glm-4"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+api_key_env = "GLM_API_KEY"
+context_window = 128000
+capabilities = ["chat", "streaming", "tools"]
+enabled = false
+
+[[models]]
+name = "kimi"
+provider = "openai_compatible"
+family = "kimi"
+version = "moonshot-v1-128k"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+context_window = 128000
+capabilities = ["chat", "streaming", "tools"]
+enabled = false

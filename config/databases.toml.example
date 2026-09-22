@@ -1,0 +1,33 @@
+# Approved database connections (DB-001). Copy to config/databases.toml to enable them.
+#
+# Rules enforced by the loader:
+#   - A connection is selected BY NAME. A model can never supply a DSN.
+#   - A password inside `target` is rejected: name an environment variable in password_env.
+#   - read_only = true opens the connection read-only at the driver level as well, so a write
+#     is refused before the database sees it (DB-005).
+#   - environment = "production" makes every call pass the production approval gate.
+
+default = "app-dev"
+
+[[connections]]
+name = "app-dev"
+dialect = "sqlite"
+target = "var/app-dev.sqlite"      # relative to the workspace root
+read_only = true
+max_rows = 1000
+statement_timeout_seconds = 30.0
+environment = "development"
+enabled = true
+description = "local development database"
+
+# PostgreSQL needs the optional driver: pip install 'psycopg[binary]>=3.1,<4'
+[[connections]]
+name = "app-staging"
+dialect = "postgresql"
+target = "postgresql://app_reader@db.staging.internal:5432/app"
+password_env = "APP_STAGING_DB_PASSWORD"
+read_only = true
+max_rows = 500
+environment = "test"
+enabled = false
+description = "staging replica, read-only"

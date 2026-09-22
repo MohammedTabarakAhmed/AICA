@@ -1,0 +1,191 @@
+"""Policy schema.
+
+Operationalizes PROJECT_BRIEF "Bounded Autonomy" and BRD AG-007, SAFE-001, SAFE-005,
+GIT-007 and section 16 (environment classification, tool allow/deny, network destination
+policy). All fields are validated; an invalid policy file must fail loudly rather than
+degrade to permissive defaults.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import ClassVar
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class Environment(StrEnum):
+    """BRD section 16: environment classification."""
+
+    DEVELOPMENT = "development"
+    TEST = "test"
+    PRODUCTION = "production"
+
+
+class ActionCategory(StrEnum):
+    """Sensitive-action categories that approval policy can reference (SAFE-001)."""
+
+    DESTRUCTIVE = "destructive"  # rm -rf, git reset --hard, DROP TABLE ...
+    PRIVILEGED = "privileged"  # sudo, chmod 777, service control ...
+    EXTERNAL = "external"  # network side effects: curl POST, push, deploy ...
+    PRODUCTION = "production"  # any action while environment == production
+    FILE_DELETE = "file_delete"  # FS-005
+    PROTECTED_BRANCH_COMMIT = "protected_branch_commit"  # GIT-007 / SAFE-003
+    DATABASE_WRITE = "database_write"  # DB-005
+    SECRET_ACCESS = "secret_access"  # noqa: S105 - category name, not a credential
+
+
+class AutonomyLimits(BaseModel):
+    """AG-007: maximum steps, time, tools, directories."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_steps: int = Field(default=50, ge=1, le=10_000)
+    max_seconds: int = Field(default=1800, ge=1, le=86_400)
+    max_test_retries: int = Field(default=3, ge=0, le=50)  # TEST-006 bounded correction
+    allowed_tools: list[str] = Field(
+        default_factory=lambda: [
+            "filesystem",
+            "git",
+            "shell",
+            "tests",
+            "rag",
+            "browser",
+            "database",
+            # AG-008. Only ever exposes agent.delegate, and only for a run whose caller
+            # asked for delegation; remove it here to forbid subagents outright.
+            "agent",
+        ]
+    )
+    allowed_directories: list[str] = Field(default_factory=lambda: ["."])
+    environment: Environment = Environment.DEVELOPMENT
+
+    @field_validator("allowed_tools", "allowed_directories")
+    @classmethod
+    def _non_empty_entries(cls, value: list[str]) -> list[str]:
+        cleaned = [v.strip() for v in value]
+        if any(not v for v in cleaned):
+            raise ValueError("entries must be non-empty strings")
+        return cleaned
+
+
+class NetworkMode(StrEnum):
+    DENY = "deny"
+    ALLOWLIST = "allowlist"
+
+
+class NetworkPolicy(BaseModel):
+    """SAFE-005: external network access is deny-by-default and allowlisted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: NetworkMode = NetworkMode.DENY
+    allowed_hosts: list[str] = Field(default_factory=list)
+
+    def is_host_allowed(self, host: str) -> bool:
+        if self.mode is NetworkMode.DENY:
+            return False
+        host = host.lower().strip()
+        for pattern in self.allowed_hosts:
+            p = pattern.lower().strip()
+            if p.startswith("*."):
+                if host == p[2:] or host.endswith(p[1:]):
+                    return True
+            elif host == p:
+                return True
+        return False
+
+
+class ApprovalPolicy(BaseModel):
+    """SAFE-001: policy defines which action categories need approval or are blocked."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    require_for: list[ActionCategory] = Field(
+        default_factory=lambda: [
+            ActionCategory.DESTRUCTIVE,
+            ActionCategory.PRIVILEGED,
+            ActionCategory.EXTERNAL,
+            ActionCategory.PRODUCTION,
+            ActionCategory.FILE_DELETE,
+            ActionCategory.PROTECTED_BRANCH_COMMIT,
+            ActionCategory.DATABASE_WRITE,
+            ActionCategory.SECRET_ACCESS,
+        ]
+    )
+    block: list[ActionCategory] = Field(default_factory=list)
+
+    def requires_approval(self, category: ActionCategory) -> bool:
+        return category in self.require_for
+
+    def is_blocked(self, category: ActionCategory) -> bool:
+        return category in self.block
+
+
+class GitPolicy(BaseModel):
+    """GIT-003 / GIT-007 / GIT-010."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    protected_branches: list[str] = Field(default_factory=lambda: ["main", "master"])
+    require_branch_for_changes: bool = True
+    allow_force_push: bool = False
+
+    def is_protected(self, branch: str) -> bool:
+        return branch in self.protected_branches
+
+
+class BrowserPolicy(BaseModel):
+    """WEB-001 / WEB-006: which applications the browser tool may drive.
+
+    The rule is the same shape as the network policy: loopback is the development case and is
+    allowed by default; anything else must be allowlisted *and* passes through the EXTERNAL
+    approval gate. A production environment classification adds the PRODUCTION gate on top
+    (applied by ``ToolContext.require_approval``), so reaching a live system is never a
+    silent side effect of a test run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    engine: str = Field(default="chromium", pattern="^(chromium|firefox|webkit)$")
+    headless: bool = True
+    allow_localhost: bool = True  # 127.0.0.1 / localhost / ::1
+    allowed_hosts: list[str] = Field(default_factory=list)  # same wildcard syntax as network
+    max_seconds: float = Field(default=30.0, gt=0, le=600)
+    screenshot_dir: str = ".aica/browser"
+
+    # A dev server bound to 0.0.0.0 is routinely reached at that literal address, and doing so
+    # still targets this machine - so it counts as local here. This is a URL the agent may
+    # browse to, never an address anything binds to.
+    _LOCAL_HOSTS: ClassVar[frozenset[str]] = frozenset(
+        {"localhost", "127.0.0.1", "::1", "0.0.0.0"}  # noqa: S104
+    )
+
+    def is_local(self, host: str) -> bool:
+        return host.lower().strip().strip("[]") in self._LOCAL_HOSTS
+
+    def is_host_allowed(self, host: str) -> bool:
+        """Local hosts follow ``allow_localhost``; everything else must be allowlisted."""
+        host = host.lower().strip()
+        if self.is_local(host):
+            return self.allow_localhost
+        for pattern in self.allowed_hosts:
+            p = pattern.lower().strip()
+            if p.startswith("*."):
+                if host == p[2:] or host.endswith(p[1:]):
+                    return True
+            elif host == p:
+                return True
+        return False
+
+
+class Policy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)  # ADM-008 policy versioning hook
+    autonomy: AutonomyLimits = Field(default_factory=AutonomyLimits)
+    network: NetworkPolicy = Field(default_factory=NetworkPolicy)
+    approval: ApprovalPolicy = Field(default_factory=ApprovalPolicy)
+    git: GitPolicy = Field(default_factory=GitPolicy)
+    browser: BrowserPolicy = Field(default_factory=BrowserPolicy)

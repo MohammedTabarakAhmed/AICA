@@ -1,0 +1,46 @@
+# AICA project policy (Phase 0 baseline). Validated against aica.policy.models.Policy.
+# Missing keys use secure defaults; unknown keys are rejected.
+version = 1
+
+[autonomy]
+max_steps = 50
+max_seconds = 1800
+max_test_retries = 3
+# "agent" permits AG-008 delegation to specialist subagents. A subagent always runs with
+# fewer tools than the agent that delegated to it and spends steps from its budget;
+# remove the entry to forbid subagents entirely.
+allowed_tools = ["filesystem", "git", "shell", "tests", "rag", "browser", "database", "agent"]
+allowed_directories = ["."]
+environment = "development"
+
+[network]
+# SAFE-005. Deny-by-default: a host must be listed here before anything may reach it.
+# api.deepseek.com was added on 2026-09-23 with the user's authorization, so the model
+# layer can be verified against a real provider (BRD Business Acceptance #1). The
+# credential itself is never stored here - config/models.toml names DEEPSEEK_API_KEY.
+mode = "allowlist"
+allowed_hosts = ["api.deepseek.com"]
+
+[approval]
+require_for = [
+  "destructive", "privileged", "external", "production",
+  "file_delete", "protected_branch_commit", "database_write", "secret_access",
+]
+block = []
+
+[git]
+protected_branches = ["main", "master"]
+require_branch_for_changes = true
+allow_force_push = false
+
+[browser]
+# WEB-001/WEB-006. Loopback is the development case and is allowed; any other host must be
+# listed here AND passes the "external" approval gate. In a production environment
+# classification the "production" gate applies as well.
+enabled = true
+engine = "chromium"          # chromium | firefox | webkit
+headless = true
+allow_localhost = true
+allowed_hosts = []           # e.g. ["*.staging.example.com"]
+max_seconds = 30.0
+screenshot_dir = ".aica/browser"
