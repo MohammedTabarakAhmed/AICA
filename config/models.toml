@@ -1,6 +1,16 @@
-# Model configuration (MVP: one default model; the list form is the seed of the MM-001 registry).
+# Approved model registry (MM-001) and routing rules (MM-004, MM-009, MM-010).
+#
 # Credentials are NEVER stored here: api_key_env names the environment variable to read.
-# The endpoint host must be present in config/policy.toml [network].allowed_hosts (SAFE-005).
+# The endpoint host must also appear in config/policy.toml [network].allowed_hosts (SAFE-005),
+# so approving a model takes two deliberate edits, in two files, by whoever owns each.
+#
+# status  = approved | pending | deprecated | blocked  (MM-001)
+#           only approved and deprecated may be used; deprecated is never auto-routed to.
+# pinned  = true fixes the exact served version for reproducibility (MM-011); a pinned entry
+#           may not name a moving alias such as "latest".
+# adapter = an approved LoRA/domain adapter served under its own id (MM-014); version still
+#           records the base model it sits on.
+
 default = "deepseek-chat"
 
 [[models]]
@@ -13,9 +23,12 @@ api_key_env = "DEEPSEEK_API_KEY"
 context_window = 128000
 capabilities = ["chat", "streaming", "tools", "fim"]
 timeout_seconds = 120.0
+status = "approved"
 enabled = true
 
-# Examples for Release 1 (disabled until approved/deployed):
+# GLM and Kimi are first-class families (MM-005, MM-006), configured and waiting on approval
+# and deployment rather than on code. They stay disabled until then, and the router skips a
+# disabled or unapproved entry instead of failing over to it.
 [[models]]
 name = "glm-4"
 provider = "openai_compatible"
@@ -25,7 +38,9 @@ base_url = "https://open.bigmodel.cn/api/paas/v4"
 api_key_env = "GLM_API_KEY"
 context_window = 128000
 capabilities = ["chat", "streaming", "tools"]
+status = "pending"
 enabled = false
+notes = "not yet approved or deployed"
 
 [[models]]
 name = "kimi"
@@ -36,4 +51,39 @@ base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 context_window = 128000
 capabilities = ["chat", "streaming", "tools"]
+status = "pending"
 enabled = false
+notes = "not yet approved or deployed"
+
+# ---------------------------------------------------------------------------- routing
+# A rule says which model handles a kind of work. With one approved model every rule resolves
+# to the same place, which is the point: the rules are here so adding a second model is a
+# configuration change and not an agent-core change (MM-008).
+[routing]
+# Tried in order when the chosen model is unavailable - a 5xx, a timeout, a rate limit, or a
+# credential that is not configured here (MM-010). Both are disabled today, so today this
+# chain is empty in effect; the router records each candidate it skips and why.
+fallbacks = ["glm-4", "kimi"]
+
+[[routing.rules]]
+task = "completion"
+model = "deepseek-chat"
+
+[[routing.rules]]
+task = "chat"
+model = "deepseek-chat"
+
+# Planning and review read a lot of code before they say anything, so they ask for room.
+[[routing.rules]]
+task = "planning"
+model = "deepseek-chat"
+min_context = 32000
+
+[[routing.rules]]
+task = "review"
+model = "deepseek-chat"
+min_context = 32000
+
+# Nothing in the registry serves embeddings yet; retrieval uses the local hashing embedder
+# until a model declares the "embeddings" capability, and the router refuses rather than
+# quietly routing embedding work to a chat model.

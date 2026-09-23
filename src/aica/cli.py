@@ -46,6 +46,7 @@ from aica.database.migrations import MigrationError, generate_migration
 from aica.mcp.config import MCPConfigError, load_mcp_config
 from aica.models.base import ModelError
 from aica.models.gateway import ModelGateway
+from aica.models.routing import ModelRouter, TaskKind
 from aica.policy import load_policy
 from aica.policy.budget import RunBudget
 from aica.rag.index import RepositoryIndex
@@ -91,9 +92,23 @@ def _context(args: argparse.Namespace) -> tuple[ToolContext, RepositoryIndex]:
     return ctx, index
 
 
-def _adapter(args: argparse.Namespace, ctx: ToolContext):  # type: ignore[no-untyped-def]
+def _adapter(  # type: ignore[no-untyped-def]
+    args: argparse.Namespace, ctx: ToolContext, task: TaskKind = TaskKind.GENERAL
+):
+    """The model for this kind of work, through the router (MM-002/004/009/010/012).
+
+    ``--model`` still wins: a name given on the command line is honoured, and the fallback
+    chain is appended only when that model is not pinned. Without ``--model`` the routing
+    rules in config/models.toml decide, and the choice is recorded in the audit log.
+    """
     gateway = ModelGateway.from_file(ctx.policy.network, getattr(args, "models_file", None))
-    return gateway.get(getattr(args, "model", None)), gateway
+    router = ModelRouter(
+        gateway, gateway.routing, audit=ctx.audit, session_id=getattr(args, "session", None)
+    )
+    selection = router.select(task, requested=getattr(args, "model", None))
+    if getattr(args, "verbose_model", False):
+        print(f"[model] {selection.describe()}", file=sys.stderr)
+    return selection.adapter, gateway
 
 
 def _print_results(results: list[object]) -> None:
@@ -167,7 +182,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
         store.load(args.session) if args.session else Session(workspace=str(ctx.workspace.root))
     )
     try:
-        adapter, _ = _adapter(args, ctx)
+        adapter, _ = _adapter(args, ctx, TaskKind.CHAT)
     except (ModelError, PermissionError) as exc:
         print(f"model unavailable: {exc}", file=sys.stderr)
         return 3
@@ -207,7 +222,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
     cut = sum(len(line) for line in lines[: args.line])
     prefix, suffix = text[:cut], text[cut:]
     try:
-        adapter, _ = _adapter(args, ctx)
+        adapter, _ = _adapter(args, ctx, TaskKind.COMPLETION)
     except (ModelError, PermissionError) as exc:
         print(f"model unavailable: {exc}", file=sys.stderr)
         return 3
@@ -236,7 +251,7 @@ def cmd_debug(args: argparse.Namespace) -> int:
         store.load(args.session) if args.session else Session(workspace=str(ctx.workspace.root))
     )
     try:
-        adapter, _ = _adapter(args, ctx)
+        adapter, _ = _adapter(args, ctx, TaskKind.CHAT)
     except (ModelError, PermissionError) as exc:
         print(f"model unavailable: {exc}", file=sys.stderr)
         return 3
@@ -295,7 +310,7 @@ def cmd_commit_message(args: argparse.Namespace) -> int:
         print("no changes to describe", file=sys.stderr)
         return 1
     try:
-        adapter, _ = _adapter(args, ctx)
+        adapter, _ = _adapter(args, ctx, TaskKind.COMMIT_MESSAGE)
     except (ModelError, PermissionError) as exc:
         print(f"model unavailable: {exc}", file=sys.stderr)
         adapter = None
@@ -328,7 +343,7 @@ def cmd_gen_tests(args: argparse.Namespace) -> int:
     resolved = ctx.workspace.resolve(args.file)
     source = resolved.absolute.read_text(encoding="utf-8", errors="replace")
     try:
-        adapter, _ = _adapter(args, ctx)
+        adapter, _ = _adapter(args, ctx, TaskKind.TESTING)
     except (ModelError, PermissionError) as exc:
         print(f"model unavailable: {exc}", file=sys.stderr)
         return 3
@@ -364,7 +379,7 @@ def cmd_task(args: argparse.Namespace) -> int:
         store.load(args.session) if args.session else Session(workspace=str(ctx.workspace.root))
     )
     try:
-        adapter, _ = _adapter(args, ctx)
+        adapter, _ = _adapter(args, ctx, TaskKind.PLANNING)
     except (ModelError, PermissionError) as exc:
         print(f"model unavailable: {exc}", file=sys.stderr)
         return 3
@@ -496,7 +511,7 @@ def cmd_browse(args: argparse.Namespace) -> int:
         if args.gen_test:
             actions = registry.call("browser.close", {"session": session}, ctx).data["actions"]
             try:
-                adapter, _ = _adapter(args, ctx)
+                adapter, _ = _adapter(args, ctx, TaskKind.TESTING)
             except (ModelError, PermissionError):
                 adapter = None  # the deterministic render still works without a model
             generated = generate_browser_test(
@@ -591,7 +606,7 @@ def cmd_db(args: argparse.Namespace) -> int:
         except (ToolError, DatabaseError):
             pass  # a migration can still be proposed without the current schema
         try:
-            adapter, _ = _adapter(args, ctx)
+            adapter, _ = _adapter(args, ctx, TaskKind.CODING)
         except (ModelError, PermissionError) as exc:
             print(f"model unavailable: {exc}", file=sys.stderr)
             return 3
@@ -798,10 +813,22 @@ def cmd_models(args: argparse.Namespace) -> int:
         return 1
     for info in models:
         mark = "*" if info.name == default else " "
-        caps = ",".join(c.value for c in info.capabilities)
-        print(
-            f"{mark} {info.name:<16} family={info.family:<10} version={info.version:<24} ctx={info.context_window:<8} caps={caps}"
-        )
+        print(f"{mark} {info.describe()}")
+    unusable = [i for i in gateway.list_models(include_unusable=True) if i not in models]
+    if unusable:
+        print("\nnot available (MM-001 status or disabled):")
+        for info in unusable:
+            print(f"  {info.describe()}")
+    routing = gateway.routing
+    if routing.rules or routing.fallbacks:
+        print("\nrouting (MM-004/MM-009):")
+        for rule in routing.rules:
+            detail = rule.model or "(requirements only)"
+            if rule.min_context:
+                detail += f", min context {rule.min_context}"
+            print(f"  {rule.task.value:<14} -> {detail}")
+        if routing.fallbacks:
+            print(f"  fallbacks       -> {', '.join(routing.fallbacks)}")
     print(
         "\n* = project default. Credentials come from environment variables; endpoints must pass network policy."
     )
@@ -881,6 +908,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--policy", default=None, help="policy file (default: config/policy.toml)")
     p.add_argument("--models-file", default=None, help="models file (default: config/models.toml)")
     p.add_argument("--actor", default="local-user", help="actor recorded in the audit log")
+    p.add_argument(
+        "--verbose-model",
+        action="store_true",
+        help="print which model was routed to, and why (MM-009/MM-012)",
+    )
     p.add_argument(
         "-y", "--yes", action="store_true", help="auto-approve sensitive actions (use deliberately)"
     )

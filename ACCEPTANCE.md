@@ -33,7 +33,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] CC-001 inline completion (`CodingAssistant.complete`, `aica complete --file --line`; FIM endpoint or chat fallback)
 - [x] CC-002 multi-line/function completion (`max_tokens`, block output; fence stripping)
 - [x] CC-003 repository context (completion injects retrieved project symbols, excluding the edited file)
-- [ ] CC-004 language/framework con- [x] CC-004 language/framework conventions (`workspace.project_context.detect_conventions` reads line length, indent, quote style, frameworks, tooling and test layout from pyproject/package.json/.editorconfig/sources, with the evidence file recorded per item; the block is injected into the chat and completion system prompts and asserted in the prompt the model receives; `aica conventions`)
+- [x] CC-004 language/framework conventions (`workspace.project_context.detect_conventions` reads line length, indent, quote style, frameworks, tooling and test layout from pyproject/package.json/.editorconfig/sources, with the evidence file recorded per item; the block is injected into the chat and completion system prompts and asserted in the prompt the model receives; `aica conventions`)
 - [ ] CC-005 accept/reject/partial accept (requires the IDE surface, INT-001 — Phase 4)
 - [x] CC-006 completion model policy (completion goes through the same gateway; a distinct model is selectable per call)
 - [x] CC-007 credential/secret leakage protection (`_SECRET_LIKE` suppression + redaction of all model output)
@@ -163,20 +163,20 @@ requirements are not lost. The BRD section is cited on each line.
 
 ## Phase 3 — Multi-Model, Memory and Governance
 
-- [ ] MM-001 model registry (config-backed list with capabilities/policy state exists; administration UI/API is ADM-003, Phase 4)
+- [x] MM-001 model registry (`config/models.toml` is the registry: name, family, exact version, context limit, declared capabilities and an approval **status** per entry; `approved`/`deprecated` are usable and `pending`/`blocked` are refused at the gateway, so status is an enforcement point rather than a label; duplicate names and rules referencing a model that does not exist are rejected at load time; `aica models` and `GET /models` expose it. The administration UI is still ADM-003, Phase 4)
 - [x] MM-002 manual selection (`--model`, `ModelGateway.get(name)`)
 - [x] MM-003 project default (`default` in `config/models.toml`)
-- [ ] MM-004 task-specific model policy (per-call model selection works; declarative per-task policy not yet implemented)
-- [ ] MM-005 GLM (configured and reachable through the adapter; NOT verified against a live GLM endpoint)
-- [ ] MM-006 Kimi (configured and reachable through the adapter; NOT verified against a live Kimi endpoint)
+- [x] MM-004 task-specific model policy (`[[routing.rules]]` per `TaskKind`: completion, chat, coding, planning, review, testing, commit_message, embeddings, general - each may name a model, a fallback chain, extra required capabilities and a minimum context; every CLI command declares the kind of work it is about to do, and `POST /sessions/{id}/tasks` takes `task_kind`)
+- [ ] MM-005 GLM (configured as a first-class family with status `pending` until approved and deployed; reachable through the OpenAI-compatible adapter and exercised against a mocked endpoint, but NOT verified against a live GLM endpoint)
+- [ ] MM-006 Kimi (configured as a first-class family with status `pending` until approved and deployed; reachable through the OpenAI-compatible adapter and exercised against a mocked endpoint, but NOT verified against a live Kimi endpoint)
 - [ ] MM-007 DeepSeek (default model configured; adapter verified against a mocked OpenAI-compatible API, NOT against live DeepSeek)
 - [x] MM-008 future-model adapter abstraction (`ModelAdapter` protocol; agent core depends on no model family)
-- [ ] MM-009 automatic routing
-- [ ] MM-010 fallback
-- [ ] MM-011 version pinning
+- [x] MM-009 automatic routing (`ModelRouter.select` builds the candidate order - named model, then rule, then default, then fallbacks - filters out anything that is not approved, enabled, capable of the work or large enough in context, and **records why each rejected candidate was rejected**; a model that cannot do the job is never tried in the hope it manages anyway)
+- [x] MM-010 fallback (`FallbackAdapter` is itself a `ModelAdapter`, so the agent core is unchanged; it falls back only on **unavailability** - 500/502/503/429/408, a transport failure, or a credential not configured on this machine - and never on a 400 or a malformed answer, because that would hide a real fault behind a second opinion. Streaming falls back only before the first chunk reaches the caller, so two models' answers are never spliced together. Verified against real HTTP responses through an httpx transport, including a stream that dies halfway)
+- [x] MM-011 version pinning (`pinned = true` fixes the exact served version: a pinned entry may not name a moving alias such as `latest`/`preview`/`stable` - it is rejected at load time - and the router never substitutes another model for a pinned one, so a pin beats the fallback chain)
 - [x] MM-012 model/version recording (exact served model id recorded per response, per session turn and in audit events)
 - [x] MM-013 capability information (`ModelInfo` capabilities/context window; `aica models`)
-- [ ] MM-014 approved model adapters
+- [x] MM-014 approved model adapters (`adapter = "..."` names an approved LoRA/domain adapter; the provider serves it under its own id, so it replaces the request's `model` field while `version` still records the base model it sits on, and an adapter may only be configured for an `approved` base)
 - [x] MEM-001 session persistence (`SessionStore`, JSON per session, redacted before write; `aica sessions`)
 - [x] MEM-002 history summarization (rolling summary folds older turns past a threshold)
 - [x] MEM-003 task-state resume (closed by the Phase 2 agent loop: `AgentState` is persisted into `Session.task_state` and resumed with `aica task --session ID --resume`; verified across two loop instances and a session round trip)
@@ -189,11 +189,11 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] SAFE-006 secret protection (redaction at the audit schema boundary, on model output, on session writes; secrets never indexed; credentials not inherited into subprocess env)
 - [x] SAFE-007 prompt-injection defense (nonce-fenced untrusted content for retrieval and attachments; severity-ranked scanner; permissions never parsed from content)
 - [x] SAFE-008 emergency stop (`CancellationToken` checked before every tool call and enforced on running subprocesses)
-- [ ] UX-007 model selection before execution with capability information
+- [x] UX-007 model selection before execution with capability information (`aica models` prints each model's family, version, context window, capabilities, status, pin and adapter, plus the routing table; `GET /models` returns the same and additionally **which model each kind of work resolves to today** and why any candidate is unavailable. Graphical rendering belongs to the IDE/Web surfaces, Phase 4)
 - [ ] UX-008 approval requests displayed prominently
-- [ ] API-012 list approved models and capabilities (BRD §15)
-- [ ] API-013 select model: pin or policy-based routing (BRD §15)
-- [ ] API-014 approval request/approve/reject (BRD §15)
+- [x] API-012 list approved models and capabilities (`GET /models`, with `?include_unusable=true` to show entries that exist but may not be used together with the status that explains why - so a client shows "pending approval" instead of a model that silently is not there)
+- [x] API-013 select model: pin or policy-based routing (`POST /sessions/{id}/tasks` takes `model` to pin one by name or `task_kind` to let the routing policy choose; the 202 response returns the chosen name, the exact version, the reason and the fallback chain, and the session records what answered for it)
+- [ ] API-014 approval request/approve/reject (partial and deliberately so: `GET /approvals` publishes the contract and `POST /approvals/{id}` records an audited decision, but there is **no server-side pending queue** - an action needing approval is refused with 409 and the client re-sends it with `auto_approve`. A real queue needs identity and RBAC, which is ADM-001)
 - [ ] SEC-001 environment classification: development/test/production (BRD §16)
 - [ ] SEC-002 tool allow/deny policies (BRD §16)
 - [ ] SEC-003 network destination policy for browser and execution tools (BRD §16)
@@ -280,6 +280,106 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### Phase 3 step 1 — multi-model routing, fallback and pinning — 2026-09-23
+- Scope: MM-001..MM-014, then the HTTP and CLI surface for them (API-012, API-013, UX-007).
+- New: `src/aica/models/routing.py` - `TaskKind`, `REQUIRED_CAPABILITIES`, `RoutingRule`,
+  `RoutingConfig`, `ModelRouter`, `FallbackAdapter`, `Selection`. The registry entries grew
+  `status`, `pinned`, `adapter` and `notes`, with validation at load time.
+- Four decisions, each a place this could have gone quietly wrong:
+  1. **Fallback is for unavailability only.** 500/502/503/429/408, a transport failure, or a
+     credential not configured here. A 400 or a malformed reply does not fall back, because
+     that would hide a real fault behind a second opinion.
+  2. **A stream falls back only before its first chunk.** After that the error propagates:
+     splicing two models' answers together is worse than an honest failure.
+  3. **`info` keeps reporting the model that was asked for**, never whichever answered; the
+     response carries the exact served version (MM-012). Otherwise the reported context
+     window changes under the caller mid-run.
+  4. **Selection is eager.** Building an adapter does no I/O but is where a missing key or a
+     denied host is found; deferring it to the first call moved a configuration error into
+     the middle of a run and past the caller's error handling.
+- MM-001 status is an enforcement point: `pending`/`blocked` are refused by the gateway,
+  `deprecated` works by explicit name but is never routed to, so an existing pin keeps working
+  while nothing new drifts onto it. A pinned entry may not name a moving alias (MM-011).
+- Verified: `tests/test_routing.py` (62 tests) drives real HTTP responses through an httpx
+  transport - 503s, a connection refusal, a malformed body, an SSE stream that dies halfway -
+  plus 8 new API tests over the real ASGI app. 100% coverage of the routing module.
+- Commands: `scripts/verify.sh` -> **667 passed, 2 skipped**, ruff and format clean, mypy
+  strict 0 issues in 68 source files, 90% coverage, zero warnings.
+- Unresolved: **no live provider call has been made.** GLM and Kimi stay `pending`; DeepSeek's
+  adapter is exercised only against a mocked endpoint. Fallback between two *live* providers
+  is therefore unproven; fallback against real HTTP responses is proven.
+- Commit/branch: feat/agent-platform.
+
+### Phase 2 step 7 — specialist subagents (AG-008) — 2026-09-23
+- `src/aica/agent/subagents.py`: the four BRD roles (research, implementation, testing,
+  review), each with a fixed tool list, reached through a run-scoped `agent.delegate`.
+- Three properties, asserted rather than asserted-in-prose: a subagent's tools and policy
+  groups are **intersections** with the parent's; its steps are carved from the parent's
+  budget and charged back, sharing the parent's cancellation token; its ledger folds into the
+  parent's, so a check the child failed or could not run leaves the parent INCOMPLETE.
+- Nesting is bounded twice: no role's tool list contains `agent.delegate`, and a subagent's
+  loop is constructed without the capability.
+- Verified over a real Git repository with real pytest child processes: an implementation
+  subagent edited the source and a real run proved it; a review subagent's edit attempt was
+  refused at plan time with `git status` clean; a red child suite kept the parent INCOMPLETE;
+  a parent capped at 3 steps gave its child exactly 2.
+- Commands: `scripts/verify.sh` -> **598 passed, 2 skipped**, 89% coverage overall and 100% on
+  the new module, zero warnings. 41 unit tests plus 4 integration tests.
+- Commit/branch: feat/agent-platform (6acf5db).
+
+### Phase 2 step 6 — closing the verification gaps — 2026-09-23
+- **PostgreSQL: closed.** A throwaway `postgres:17-alpine` container was started with the
+  user's authorization, the Postgres path verified against it, and the container removed.
+  `tests/integration/test_postgres.py` (14 tests) is skipped unless `AICA_TEST_POSTGRES_DSN`
+  is set, so the suite still runs on a machine with no database.
+- **The bug this found, which nothing else could have:** `SET statement_timeout = %s` -
+  PostgreSQL's `SET` takes no bound parameters, so **every PostgreSQL connection failed at
+  startup** with `syntax error at or near "$1"`. Fixed with `SELECT set_config(...)`, which
+  does take parameters, rather than by interpolating the value into the statement.
+- Verified against the real server: `information_schema` tables and columns; primary keys
+  through the correlated subquery; `pg_indexes`; `%s` binding; a real join and aggregate; a
+  real `EXPLAIN` and `EXPLAIN ANALYZE` with actual timings; **server-side read-only
+  enforcement** (`ReadOnlySqlTransaction` when the classifier is bypassed); the statement
+  timeout really cancelling `pg_sleep(5)`; an approved `UPDATE` confirmed with the driver
+  independently of the tool; and the password absent from the configuration file.
+- **Live model: harness ready, not run.** `tests/integration/test_live_model.py` needs both
+  `DEEPSEEK_API_KEY` and `AICA_TEST_LIVE_MODEL=1` - the opt-in is separate from the key so a
+  test run cannot spend someone's credit by accident.
+- Policy change, with the user's authorization: `config/policy.toml` `[network]` moved from
+  `deny` to `allowlist` with the single host `api.deepseek.com`.
+- `tests/test_policy.py` asserted the literal `DENY` mode and correctly failed on that change.
+  It now asserts the **invariant**: the mode is deny or allowlist, an allowlist is non-empty
+  and wildcard-free, and an unlisted host is still refused.
+- Commands: `scripts/verify.sh` twice - without a database (**553 passed, 2 skipped**) and
+  with the live server (**566 passed**).
+
+### Phase 2 steps 1–5 — agent loop, browser, database, MCP, HTTP API — 2026-09-22
+Recorded in full in `.claude-progress.md` (Decision Log entries 016–020); summarised here so
+this file stands on its own.
+- **Step 1, the agent loop (AG-001..AG-010).** Planner producing an explicit ordered plan,
+  executor consuming `RunBudget`/`CancellationToken` per step, observing tool results and
+  adapting on failure, finishing through `VerificationLedger` into `TaskReport`. Verified end
+  to end: a red suite, a replan, a real edit, a green suite, and the rerun confirmed
+  independently of the agent. **Bug found:** a tool that *returns* failure (a red test suite)
+  rather than raising was being treated as success.
+- **Step 2, browser (WEB-001..006, TEST-004).** Playwright, 8 tools, verified in real Chromium
+  against a real loopback server, including a generated E2E test that pytest then really ran.
+  **Two bugs found:** HTTP >= 400 responses were invisible to evidence capture, and the
+  generated-test verification was silently skipping for a missing `pytest-playwright`.
+- **Step 3, database (DB-001..007, LANG-006).** 5 tools. Connections are named in
+  configuration and never model-supplied; read-only is enforced at the driver; writes and
+  destructive statements pass approval; migrations are generated, reviewed and never
+  auto-applied. Verified against real SQLite.
+- **Step 4, MCP (MCP-001..007).** stdio JSON-RPC client, tools namespaced `mcp.<server>.<tool>`
+  under a policy group that is off by default, untrusted servers gated by approval, arguments
+  validated locally before they are sent, and a hostile server proved unable to shadow a
+  built-in tool.
+- **Step 5, HTTP API (API-001..011).** FastAPI over the real ASGI app: token auth enforced, a
+  session created, repository search returning real citations, a destructive command refused
+  with 409, and SSE event streaming. **Bug found:** a cross-thread SQLite failure plus a leaked
+  connection per HTTP task, traced with `PYTHONTRACEMALLOC` and fixed with an explicit
+  thread-handoff flag and an `on_finish` close.
 
 ### Phase 1 (MVP) — 2026-09-22
 - Commands: `scripts/verify.sh` (ruff check; ruff format --check; mypy strict; pytest --cov).
