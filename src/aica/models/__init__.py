@@ -5,6 +5,7 @@ from aica.models.base import (
     ModelError,
     ModelInfo,
     ModelResponse,
+    ModelStatus,
     ModelUnavailable,
     StreamChunk,
     Usage,
@@ -18,10 +19,20 @@ from aica.models.gateway import (
     NetworkDenied,
 )
 from aica.models.openai_compat import OpenAICompatibleAdapter, OpenAICompatibleConfig
+from aica.models.routing import (
+    FallbackAdapter,
+    ModelRouter,
+    RoutingConfig,
+    RoutingError,
+    RoutingRule,
+    Selection,
+    TaskKind,
+)
 
 __all__ = [
     "DEFAULT_MODELS_PATH",
     "Capability",
+    "FallbackAdapter",
     "ChatMessage",
     "ModelAdapter",
     "ModelConfig",
@@ -29,12 +40,19 @@ __all__ = [
     "ModelGateway",
     "ModelInfo",
     "ModelResponse",
+    "ModelRouter",
+    "ModelStatus",
     "ModelUnavailable",
     "ModelsConfig",
     "NetworkDenied",
     "OpenAICompatibleAdapter",
     "OpenAICompatibleConfig",
+    "RoutingConfig",
+    "RoutingError",
+    "RoutingRule",
     "ScriptedAdapter",
+    "Selection",
     "StreamChunk",
+    "TaskKind",
     "Usage",
 ]

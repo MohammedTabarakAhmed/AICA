@@ -34,6 +34,23 @@ class Capability(StrEnum):
     EMBEDDINGS = "embeddings"
 
 
+class ModelStatus(StrEnum):
+    """MM-001: where a model stands with whoever approves models here.
+
+    Only ``approved`` may be used. ``deprecated`` may be used but is never routed to
+    automatically, so an existing pin keeps working while nothing new drifts onto it.
+    """
+
+    APPROVED = "approved"
+    PENDING = "pending"  # requested, not yet approved
+    DEPRECATED = "deprecated"  # usable by explicit name only
+    BLOCKED = "blocked"  # refused outright
+
+    @property
+    def usable(self) -> bool:
+        return self in {ModelStatus.APPROVED, ModelStatus.DEPRECATED}
+
+
 class ModelInfo(BaseModel):
     """MM-013: capability information exposed to users and routers."""
 
@@ -44,9 +61,23 @@ class ModelInfo(BaseModel):
     version: str  # exact served version / model id
     context_window: int = Field(gt=0)
     capabilities: list[Capability] = Field(default_factory=list)
+    status: ModelStatus = ModelStatus.APPROVED
+    pinned: bool = False  # MM-011: this exact version, no substitution
+    adapter: str | None = None  # MM-014: approved LoRA/domain adapter served for this model
 
     def supports(self, cap: Capability) -> bool:
         return cap in self.capabilities
+
+    def describe(self) -> str:
+        parts = [f"{self.name} ({self.family}/{self.version})", f"{self.context_window} ctx"]
+        if self.status is not ModelStatus.APPROVED:
+            parts.append(self.status.value.upper())
+        if self.pinned:
+            parts.append("pinned")
+        if self.adapter:
+            parts.append(f"adapter {self.adapter}")
+        parts.append(", ".join(c.value for c in self.capabilities) or "no declared capability")
+        return " | ".join(parts)
 
 
 class Usage(BaseModel):

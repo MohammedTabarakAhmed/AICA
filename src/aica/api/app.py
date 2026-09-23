@@ -38,8 +38,9 @@ from aica.approvals import AllowAllApprover, ApprovalRequired, Approver, DenyAll
 from aica.audit import AuditLog, JsonlAuditSink
 from aica.chat.assistant import CodingAssistant
 from aica.chat.session import Session, SessionStore
-from aica.models.base import ModelError
+from aica.models.base import ModelError, ModelInfo
 from aica.models.gateway import ModelGateway
+from aica.models.routing import ModelRouter, Selection, TaskKind
 from aica.policy import Policy, load_policy
 from aica.policy.budget import RunBudget
 from aica.rag.index import RepositoryIndex
@@ -87,7 +88,10 @@ class RunTaskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task: str = Field(min_length=1, max_length=4000)
+    # MM-002: a model named here is used as asked. MM-004: without one, the kind of work
+    # decides, through the routing rules in config/models.toml.
     model: str | None = None
+    task_kind: TaskKind = TaskKind.PLANNING
     max_steps: int | None = Field(default=None, ge=1, le=1000)
     max_seconds: int | None = Field(default=None, ge=1, le=86_400)
     depth: str = Field(default="normal", pattern="^(shallow|normal|deep)$")
@@ -191,10 +195,20 @@ def create_app(settings: ApiSettings) -> FastAPI:
     def store() -> SessionStore:
         return SessionStore(settings.workspace.resolve())
 
-    def adapter_for(model: str | None):  # type: ignore[no-untyped-def]
+    def gateway_for() -> ModelGateway:
         policy = load_policy(settings.policy_file)
-        gateway = ModelGateway.from_file(policy.network, settings.models_file)
-        return gateway.get(model)
+        return ModelGateway.from_file(policy.network, settings.models_file)
+
+    def select_model(
+        model: str | None,
+        task_kind: TaskKind = TaskKind.PLANNING,
+        audit: AuditLog | None = None,
+        session_id: str | None = None,
+    ) -> Selection:
+        """API-013: pin a model by name, or let the routing policy choose (MM-002/004/009)."""
+        gateway = gateway_for()
+        router = ModelRouter(gateway, gateway.routing, audit=audit, session_id=session_id)
+        return router.select(task_kind, requested=model)
 
     def load_session(session_id: str) -> Session:
         try:
@@ -280,10 +294,16 @@ def create_app(settings: ApiSettings) -> FastAPI:
         session = load_session(session_id)
         ctx, index = build_context(session_id, auto_approve=request.auto_approve)
         try:
-            adapter = adapter_for(request.model or session.model_name)
+            selection = select_model(
+                request.model or session.model_name,
+                request.task_kind,
+                audit=ctx.audit,
+                session_id=session_id,
+            )
         except (ModelError, PermissionError) as exc:
             index.close()
             raise HTTPException(status_code=503, detail=f"model unavailable: {exc}") from exc
+        adapter = selection.adapter
 
         state: AgentState | None = None
         if request.resume:
@@ -325,7 +345,22 @@ def create_app(settings: ApiSettings) -> FastAPI:
             # The task borrows this index for its whole run; the request cannot close it.
             on_finish=index.close,
         )
-        return {"task_id": record.id, "session_id": session_id, "state": record.state.value}
+        # MM-012: the caller is told exactly which model this run went to, and what it would
+        # fall back to, rather than having to infer it from the finished report.
+        session.model_name = selection.name
+        store().save(session)
+        return {
+            "task_id": record.id,
+            "session_id": session_id,
+            "state": record.state.value,
+            "model": {
+                "name": selection.name,
+                "version": selection.version,
+                "task_kind": selection.task.value,
+                "reason": selection.reason,
+                "fallbacks": selection.fallbacks,
+            },
+        }
 
     @app.get("/tasks", dependencies=guard)
     def list_tasks(session_id: str | None = None) -> dict[str, Any]:
@@ -396,22 +431,63 @@ def create_app(settings: ApiSettings) -> FastAPI:
 
     # ------------------------------------------------------------------ models
     @app.get("/models", dependencies=guard)
-    def list_models() -> dict[str, Any]:
-        """List approved models and capabilities (MM-001, MM-013)."""
-        policy = load_policy(settings.policy_file)
-        gateway = ModelGateway.from_file(policy.network, settings.models_file)
+    def list_models(include_unusable: bool = False) -> dict[str, Any]:
+        """API-012/UX-007: the approved models, their capabilities and the routing rules.
+
+        A surface needs this *before* it starts a task: which models may be chosen, what each
+        one can do and how large its context is (MM-001, MM-013), plus which model a kind of
+        work would go to if nothing is chosen (MM-004/MM-009). ``include_unusable`` also lists
+        entries that exist but may not be used, with the status that explains why, so a user
+        sees "pending approval" instead of a model that silently is not there.
+        """
+        gateway = gateway_for()
+
+        def described(info: ModelInfo) -> dict[str, Any]:
+            return {
+                "name": info.name,
+                "family": info.family,
+                "version": info.version,
+                "context_window": info.context_window,
+                "capabilities": [c.value for c in info.capabilities],
+                "status": info.status.value,
+                "usable": info.status.usable,
+                "pinned": info.pinned,
+                "adapter": info.adapter,
+            }
+
+        usable = gateway.list_models()
+        listed = gateway.list_models(include_unusable=True) if include_unusable else usable
+        routing = gateway.routing
+        rules = [
+            {
+                "task": rule.task.value,
+                "model": rule.model,
+                "fallbacks": rule.fallbacks,
+                "min_context": rule.min_context,
+                "require": [c.value for c in rule.require],
+            }
+            for rule in routing.rules
+        ]
+        # What each kind of work would actually resolve to today, which is not always what the
+        # rule names: an unapproved or too-small model is skipped, and the reason is reported.
+        router = ModelRouter(gateway, routing)
+        resolved: dict[str, Any] = {}
+        for kind in TaskKind:
+            try:
+                candidates, rejected, reason = router.candidates(kind)
+            except ModelError as exc:  # pragma: no cover - defensive
+                resolved[kind.value] = {"error": str(exc)}
+                continue
+            resolved[kind.value] = {
+                "model": candidates[0] if candidates else None,
+                "fallbacks": candidates[1:],
+                "reason": reason,
+                "unavailable": rejected,
+            }
         return {
             "default": gateway.default_name(),
-            "models": [
-                {
-                    "name": info.name,
-                    "family": info.family,
-                    "version": info.version,
-                    "context_window": info.context_window,
-                    "capabilities": [c.value for c in info.capabilities],
-                }
-                for info in gateway.list_models()
-            ],
+            "models": [described(i) for i in listed],
+            "routing": {"fallbacks": routing.fallbacks, "rules": rules, "resolves_to": resolved},
         }
 
     # ------------------------------------------------------------------ API-006
