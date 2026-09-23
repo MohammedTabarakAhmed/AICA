@@ -224,15 +224,15 @@ requirements are not lost. The BRD section is cited on each line.
 - [ ] REV-005 security review
 - [ ] REV-006 review summary
 - [ ] REV-007 source locations
-- [ ] EVAL-001 golden tasks
-- [ ] EVAL-002 correctness
-- [ ] EVAL-003 completion rate
-- [ ] EVAL-004 tool reliability
-- [ ] EVAL-005 RAG quality
-- [ ] EVAL-006 model comparison
-- [ ] EVAL-007 latency/resource metrics
-- [ ] EVAL-008 regression gates
-- [ ] EVAL-009 reproducibility metadata
+- [x] EVAL-001 golden tasks (`evaluation/tasks/*.toml`: each task is one versioned, self-contained file - the repository it runs in is inline, so a task's history is visible in Git and running the suite never depends on a fixture someone edited by hand. Every task carries `id@vN` and a content checksum, and the suite has a checksum of its own. Four tasks ship: two bug/feature tasks, one retrieval task, and a control task that **cannot pass**, kept so the harness is shown to report failure)
+- [x] EVAL-002 correctness (a task's own `verify` command decides, run as a separate process in the workspace after the agent says it is finished; the agent's report is recorded beside it and never consulted for the verdict. Verified: the agent really edits the source and a real pytest child process confirms it)
+- [x] EVAL-003 completion rate (share of agent tasks that behaved as the suite expects; a control task meant to fail counts as correct when it fails, so adding honesty checks does not depress the score)
+- [x] EVAL-004 tool reliability (counted from the agent's own event stream - calls made, calls failed, and arguments rejected before execution - excluding control tasks whose deliberate red test run is a correct call reporting a correct failure)
+- [x] EVAL-005 RAG quality (a retrieval task names the files that genuinely answer its query; the harness indexes the workspace for real, searches, and reports precision, recall and reciprocal rank - the last because putting the right file *first* is what matters when the result is fed to a model with a limited context)
+- [x] EVAL-006 model comparison (`Comparison` runs several reports side by side, **refuses** to compare different suite revisions rather than caveating it, ranks on correctness then reliability then speed, lists the tasks where models disagree, and excludes any model with a false success from winning at all. Verified against real report objects; **no two live models have been compared**, because none has answered)
+- [x] EVAL-007 latency (measured per task; p50 and p95 by nearest rank, so a small suite reports a real measurement rather than an interpolation between runs that never happened. A gate can refuse a candidate that is too slow)
+- [x] EVAL-008 regression gates (`evaluate_gate`: thresholds, plus a baseline comparison that catches a candidate still above the bar but clearly worse; a task the baseline passed and the candidate fails is a regression whatever the aggregate says; **one false success fails the gate outright** at any score; and a gate may only be evaluated against the same suite revision. `aica eval gate` exits non-zero on failure so CI can use it)
+- [x] EVAL-009 reproducibility metadata (every report carries model name, exact served version, adapter, suite revision checksum, prompt checksum, policy version and the harness's own commit; reports round-trip to JSON with all of it)
 - [ ] API-015 audit retrieval (BRD §15)
 - [ ] SEC-005 configurable retention/deletion of sessions, source-derived context, trajectories (BRD §16)
 - [ ] SEC-006 administrative separation of duties for model/tool approval (BRD §16)
@@ -280,6 +280,46 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### Phase 3 step 2 — evaluation harness (EVAL-001..009) — 2026-09-23
+- Chosen over the review capability as the more future-proof next step: review is one feature,
+  while evaluation is what makes every later change to prompts, routing, models or the agent
+  loop measurable instead of anecdotal, and EVAL-008 protects what already exists.
+- New package `src/aica/evaluation/`: `tasks.py` (golden tasks, checksums, verification),
+  `metrics.py` (`TaskResult`, `SuiteReport`, `Provenance`, retrieval scoring), `runner.py`
+  (`Evaluator`, scripted and router model factories), `gates.py` (`ReleaseGate`,
+  `evaluate_gate`, `Comparison`). CLI: `aica eval run|gate|compare`.
+- The design rule throughout: **the agent's report never decides anything.** Success comes
+  from the task's own command, run as a separate process afterwards. Where the two disagree,
+  the run is recorded as a false success - which fails the gate outright and disqualifies a
+  model from winning a comparison, at any score.
+- The suite ships a control task that **cannot pass** (two tests demanding different answers).
+  If it ever passes, the scoring is wrong; if the agent reports SUCCESS on it, that is a
+  false success rather than a low score.
+- **Two bugs this found immediately, in code that was already "verified":**
+  1. `_python_runner` fell back to the bare word `python` when a project had no `.venv`. On
+     this machine that resolved to an interpreter without pytest, so **every discovered Python
+     test command failed in a fresh workspace** - and on a Linux box with only `python3` it
+     would not resolve at all. Now falls back to `sys.executable`, which is always real.
+  2. A test in `tests/test_agent.py` asserted the *consequence* of that bug ("the check is
+     recorded as skipped because the interpreter cannot run pytest"). It was rewritten to
+     assert the actual AG-009 property: the forgotten check really ran and its outcome is in
+     the ledger.
+  A third was mine, caught by my own test: the task-path validator used `Path.is_absolute()`,
+  which is False for `/etc/passwd` on Windows, so a task authored there would escape its
+  workspace when the suite ran on Linux. It now checks both path flavours.
+- Also corrected a flaw in my own metric: the control task's deliberate red test run was
+  counted as a tool failure, so the default gate could never pass and every honesty check
+  added to the suite would have lowered the score.
+- Commands: `scripts/verify.sh` -> **724 passed, 2 skipped**, ruff and format clean, mypy
+  strict 0 issues in 73 source files, 89% coverage, zero warnings. 46 unit tests and 10
+  integration tests that run the real suite with real pytest child processes.
+- `aica eval run --scripted` on the shipped suite: completion 100%, correctness 100%, tool
+  reliability 100%, retrieval recall 1.00 (precision 0.33 over 5 returned), no false
+  successes. **A scripted run measures the harness and the tools, not a model**, and both the
+  report and the gate say so.
+- Unresolved: unchanged - no live provider call, so no model has actually been evaluated.
+- Commit/branch: feat/agent-platform.
 
 ### Phase 3 step 1 — multi-model routing, fallback and pinning — 2026-09-23
 - Scope: MM-001..MM-014, then the HTTP and CLI surface for them (API-012, API-013, UX-007).

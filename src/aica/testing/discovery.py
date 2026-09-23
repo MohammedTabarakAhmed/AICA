@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,11 +34,17 @@ def _python_runner(root: Path) -> str:
 
     The interpreter path is rendered with the platform separator: cmd.exe does not accept
     a forward-slash path as the leading token of a command.
+
+    With no project environment, fall back to the interpreter that is running right now
+    rather than to the bare word ``python``. ``python`` is not guaranteed to exist - many
+    Linux installations only ship ``python3`` - and where it does exist it resolves to
+    whatever happens to be first on PATH, which is not necessarily the environment this agent
+    was installed into. ``sys.executable`` is always a real interpreter.
     """
     for parts in ((".venv", "Scripts", "python.exe"), (".venv", "bin", "python")):
         if (root / Path(*parts)).exists():
             return f"{Path(*parts)} -m"
-    return "python -m"
+    return f'"{sys.executable}" -m' if sys.executable else "python -m"
 
 
 def discover(root: str | Path) -> list[TestCommand]:

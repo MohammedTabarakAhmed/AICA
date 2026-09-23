@@ -19,6 +19,7 @@ from aica.models.fake import ScriptedAdapter
 from aica.policy import Policy
 from aica.policy.budget import CancellationToken, RunBudget
 from aica.policy.models import ActionCategory, ApprovalPolicy, AutonomyLimits
+from aica.testing.results import CheckStatus
 from aica.tools import default_registry
 from tests.test_tools_fs import make_ctx
 
@@ -422,10 +423,14 @@ def test_required_check_the_plan_forgot_is_run_at_the_end(workspace: Path) -> No
     ctx = make_ctx(workspace)
     adapter = ScriptedAdapter([plan_json(READ, verification=["unit"])])
     report = AgentLoop(adapter, default_registry()).run("task", ctx)
-    # The fixture project has no .venv, so the discovered interpreter cannot run pytest:
-    # the check is recorded as skipped with the reason, never as passed.
-    assert report.succeeded is False
-    assert "unit" in report.ledger.disclosure()
+
+    # The plan only read a file; the loop discovered the project's own test command and ran
+    # the required check itself, so the ledger holds a real outcome rather than an assumption.
+    assert report.ledger.required["unit"] is CheckStatus.PASSED
+    outcomes = [o for o in report.ledger.outcomes if o.kind == "unit"]
+    assert outcomes and outcomes[0].passed >= 1, "the check must have really executed"
+    assert "pytest" in outcomes[0].command
+    assert report.steps_used > len(report.ledger.outcomes), "verification costs a step (AG-007)"
 
 
 def test_unrunnable_verification_is_disclosed_not_swallowed(workspace: Path) -> None:
