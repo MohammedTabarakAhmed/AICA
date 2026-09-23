@@ -1,0 +1,60 @@
+id = "add-missing-helper"
+version = 1
+kind = "agent"
+description = "Write the slugify() the tests already import but nobody wrote"
+tags = ["python", "feature"]
+task = "tests/test_text.py imports slugify from src.text, which does not exist. Write it so the tests pass."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 10
+max_seconds = 180
+
+scripted = [
+  '''{
+  "summary": "write the helper, then prove it",
+  "steps": [
+    {
+      "intent": "read the test to see what is expected",
+      "tool": "fs.read",
+      "arguments": {
+        "path": "tests/test_text.py"
+      }
+    },
+    {
+      "intent": "write the helper",
+      "tool": "fs.write",
+      "arguments": {
+        "path": "src/text.py",
+        "content": "\"\"\"Text helpers.\"\"\"\n\nimport re\n\n_KEEP = re.compile(r\"[^a-z0-9]+\")\n\n\ndef slugify(text: str) -> str:\n    \"\"\"Lowercase, strip punctuation, join the remaining words with hyphens.\"\"\"\n    return _KEEP.sub(\"-\", text.lower()).strip(\"-\")\n"
+      }
+    },
+    {
+      "intent": "run the suite",
+      "tool": "test.run",
+      "arguments": {
+        "kind": "unit"
+      }
+    }
+  ],
+  "verification": [
+    "unit"
+  ]
+}''',
+]
+
+[files]
+"src/__init__.py" = ""
+"tests/test_text.py" = """from src.text import slugify
+
+
+def test_lowercases_and_joins_with_hyphens() -> None:
+    assert slugify("Hello World") == "hello-world"
+
+
+def test_collapses_punctuation_and_runs_of_spaces() -> None:
+    assert slugify("  Order #42:  shipped!  ") == "order-42-shipped"
+
+
+def test_empty_input_is_empty_output() -> None:
+    assert slugify("   ") == ""
+"""

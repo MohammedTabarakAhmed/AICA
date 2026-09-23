@@ -1,0 +1,55 @@
+id = "locate-rate-limit"
+version = 1
+kind = "rag"
+description = "Retrieval finds where rate limiting is enforced, not merely where it is mentioned"
+tags = ["retrieval"]
+query = "where is the request rate limit enforced"
+relevant_paths = ["src/api/throttle.py"]
+retrieve = 5
+
+[files]
+"src/api/throttle.py" = """\"\"\"Request throttling.\"\"\"
+
+import time
+
+
+class RateLimiter:
+    \"\"\"Fixed-window limiter: at most `limit` calls per `window` seconds, per key.\"\"\"
+
+    def __init__(self, limit: int = 60, window: float = 60.0) -> None:
+        self.limit = limit
+        self.window = window
+        self._seen: dict[str, list[float]] = {}
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        recent = [t for t in self._seen.get(key, []) if now - t < self.window]
+        self._seen[key] = recent
+        if len(recent) >= self.limit:
+            return False
+        recent.append(now)
+        return True
+"""
+"src/api/routes.py" = """\"\"\"HTTP routes. Rate limiting is applied by the throttle middleware, not here.\"\"\"
+
+
+def register(app, handlers):
+    for path, handler in handlers.items():
+        app.route(path)(handler)
+    return app
+"""
+"src/config.py" = """\"\"\"Settings. RATE_LIMIT is read here and passed to the limiter at startup.\"\"\"
+
+RATE_LIMIT = 60
+REQUEST_WINDOW_SECONDS = 60.0
+DATABASE_URL = "postgresql://localhost/app"
+"""
+"docs/api.md" = """# API
+
+Clients are rate limited. Exceeding the limit returns HTTP 429. See the operations runbook
+for how the limit is tuned per tenant.
+"""
+"README.md" = """# Example service
+
+A small HTTP service used as a retrieval fixture.
+"""

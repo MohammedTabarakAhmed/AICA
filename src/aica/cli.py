@@ -15,6 +15,7 @@ Commands:
   aica db schema|query|explain       controlled database access (DB-001..007)
   aica mcp list|tools|call           MCP servers and their tools (MCP-001/005/007)
   aica serve [--port N]              run the HTTP API (API-001..011)
+  aica eval run|gate|compare         golden-task evaluation (EVAL-001..009)
   aica test [--kind unit]            discover and run tests (TEST-001..009)
   aica run <command>                 policy-checked command execution (EXEC-001..007)
   aica git status|diff|branches      Git inspection (GIT-002/005)
@@ -803,6 +804,97 @@ def cmd_git(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    """EVAL-001..009: run the golden suite, gate a candidate, or compare models."""
+    from aica.evaluation import (
+        Comparison,
+        Evaluator,
+        GateError,
+        Provenance,
+        ReleaseGate,
+        SuiteError,
+        SuiteReport,
+        evaluate_gate,
+        load_suite,
+        router_factory,
+        scripted_factory,
+    )
+    from aica.evaluation.runner import ModelFactory
+
+    if args.eval_command == "gate":
+        try:
+            candidate = SuiteReport.load(args.candidate)
+            baseline = SuiteReport.load(args.baseline) if args.baseline else None
+            decision = evaluate_gate(
+                candidate,
+                ReleaseGate(
+                    min_completion_rate=args.min_completion,
+                    min_correctness=args.min_correctness,
+                    min_tool_reliability=args.min_tool_reliability,
+                ),
+                baseline,
+            )
+        except (OSError, ValueError, GateError) as exc:
+            print(f"gate could not be evaluated: {exc}", file=sys.stderr)
+            return 2
+        print(decision.render())
+        return 0 if decision.passed else 1
+
+    if args.eval_command == "compare":
+        comparison = Comparison()
+        try:
+            for path in args.report:
+                comparison.add(SuiteReport.load(path))
+        except (OSError, ValueError, GateError) as exc:
+            print(f"cannot compare: {exc}", file=sys.stderr)
+            return 2
+        print(comparison.render())
+        return 0
+
+    # run
+    ctx, index = _context(args)
+    index.close()  # each task gets its own workspace and its own index
+    try:
+        suite = load_suite(args.suite).filtered(args.task or None, args.tag or None)
+    except SuiteError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 2
+    if args.list:
+        print(suite.describe())
+        return 0
+
+    provenance = Provenance(model="scripted", model_version="scripted")
+    factory: ModelFactory = scripted_factory
+    if not args.scripted:
+        try:
+            gateway = ModelGateway.from_file(ctx.policy.network, getattr(args, "models_file", None))
+            router = ModelRouter(gateway, gateway.routing, audit=ctx.audit)
+            selection = router.select(TaskKind.PLANNING, requested=args.model)
+        except (ModelError, PermissionError) as exc:
+            print(f"model unavailable: {exc}", file=sys.stderr)
+            print("use --scripted to exercise the harness itself without a model", file=sys.stderr)
+            return 3
+        factory = router_factory(router)
+        provenance = Provenance(
+            model=selection.name,
+            model_version=selection.version,
+            adapter=gateway.config_for(selection.name).adapter,
+        )
+
+    report = Evaluator(policy=ctx.policy).run(suite, factory, provenance)
+    print(report.render())
+    if args.out:
+        saved = report.save(args.out)
+        print(f"\n[report written to {saved}]", file=sys.stderr)
+    if provenance.model == "scripted":
+        print(
+            "\n[scripted run: this measures the harness and the tools, not a model]",
+            file=sys.stderr,
+        )
+    # A false success is the one outcome that must not be reported as a clean run.
+    return 1 if report.false_successes else 0
+
+
 def cmd_models(args: argparse.Namespace) -> int:
     ctx, _ = _context(args)
     gateway = ModelGateway.from_file(ctx.policy.network, getattr(args, "models_file", None))
@@ -1067,6 +1159,35 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("git", help="Git inspection")
     sp.add_argument("subcommand", choices=["status", "diff", "branches", "log"])
     sp.set_defaults(func=cmd_git)
+
+    sp = sub.add_parser("eval", help="golden-task evaluation (EVAL-001..009)")
+    eval_sub = sp.add_subparsers(dest="eval_command", required=True)
+
+    ep = eval_sub.add_parser("run", help="run the golden suite and report metrics")
+    ep.add_argument("--suite", default=None, help="task directory (default: evaluation/tasks)")
+    ep.add_argument("--task", action="append", help="run only this task id (repeatable)")
+    ep.add_argument("--tag", action="append", help="run only tasks with this tag (repeatable)")
+    ep.add_argument("--model", default=None, help="model to evaluate (default: routing policy)")
+    ep.add_argument(
+        "--scripted",
+        action="store_true",
+        help="use each task's canned replies: exercises the harness, not a model",
+    )
+    ep.add_argument("--out", default=None, help="write the JSON report here")
+    ep.add_argument("--list", action="store_true", help="list the tasks and stop")
+    ep.set_defaults(func=cmd_eval)
+
+    gp = eval_sub.add_parser("gate", help="decide whether a candidate may be promoted (EVAL-008)")
+    gp.add_argument("--candidate", required=True, help="candidate report (JSON)")
+    gp.add_argument("--baseline", default=None, help="approved report to compare against")
+    gp.add_argument("--min-completion", type=float, default=0.8)
+    gp.add_argument("--min-correctness", type=float, default=0.8)
+    gp.add_argument("--min-tool-reliability", type=float, default=0.9)
+    gp.set_defaults(func=cmd_eval)
+
+    cp = eval_sub.add_parser("compare", help="compare models on the same suite (EVAL-006)")
+    cp.add_argument("--report", action="append", required=True, help="report JSON (repeatable)")
+    cp.set_defaults(func=cmd_eval)
 
     sp = sub.add_parser("models", help="list approved models")
     sp.set_defaults(func=cmd_models)
