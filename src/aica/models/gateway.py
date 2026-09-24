@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from aica.admin.controls import ControlPlane, TargetKind
 from aica.models.base import Capability, ModelAdapter, ModelError, ModelInfo, ModelStatus
 from aica.models.openai_compat import OpenAICompatibleAdapter, OpenAICompatibleConfig
 from aica.models.routing import RoutingConfig
@@ -131,6 +132,10 @@ class ModelsConfig(BaseModel):
         return self
 
 
+class ModelDisabled(PermissionError):
+    """SEC-007: an administrator switched this model off. Not a configuration error."""
+
+
 class NetworkDenied(PermissionError):
     pass
 
@@ -141,10 +146,12 @@ class ModelGateway:
         config: ModelsConfig,
         network: NetworkPolicy,
         transport: httpx.BaseTransport | None = None,
+        controls: ControlPlane | None = None,
     ) -> None:
         self._config = config
         self._network = network
         self._transport = transport
+        self._controls = controls  # SEC-007; None = no control plane wired up
         self._cache: dict[str, ModelAdapter] = {}
 
     @classmethod
@@ -153,6 +160,7 @@ class ModelGateway:
         network: NetworkPolicy,
         path: str | os.PathLike[str] | None = None,
         transport: httpx.BaseTransport | None = None,
+        controls: ControlPlane | None = None,
     ) -> ModelGateway:
         candidate = (
             Path(path)
@@ -160,11 +168,11 @@ class ModelGateway:
             else Path(os.environ.get("AICA_MODELS_FILE", str(DEFAULT_MODELS_PATH)))
         )
         if not candidate.exists():
-            return cls(ModelsConfig(), network, transport)
+            return cls(ModelsConfig(), network, transport, controls)
         try:
             with candidate.open("rb") as fh:
                 data = tomllib.load(fh)
-            return cls(ModelsConfig.model_validate(data), network, transport)
+            return cls(ModelsConfig.model_validate(data), network, transport, controls)
         except (tomllib.TOMLDecodeError, ValidationError) as exc:
             raise ModelError(f"invalid models file {candidate}: {exc}") from exc
 
@@ -209,6 +217,13 @@ class ModelGateway:
 
     def get(self, name: str | None = None) -> ModelAdapter:
         cfg = self.config_for(name)
+        # SEC-007 / ADM-003. Checked before the cache on purpose: a model already built
+        # for this process must stop being served the moment it is disabled, or
+        # "immediately" would mean "after the next restart" for every long-running server.
+        if self._controls is not None:
+            disabled = self._controls.is_disabled(TargetKind.MODEL, cfg.name, cfg.family)
+            if disabled is not None:
+                raise ModelDisabled(disabled.describe())
         if cfg.name in self._cache:
             return self._cache[cfg.name]
         if not self._network.is_host_allowed(cfg.host):

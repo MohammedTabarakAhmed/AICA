@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from aica.admin.controls import ControlPlane
 from aica.approvals import ApprovalRequest, ApprovalRequired, Approver, DenyAllApprover
 from aica.audit import AuditLog, EventCategory, InMemoryAuditSink, Outcome
 from aica.policy import CancellationToken, Policy
@@ -50,6 +51,10 @@ class ToolContext:
     # (tests, or a project with several configurations). Never a DSN: a connection is always
     # selected by name from a configuration file (DB-001).
     databases_file: str | None = None
+    # SEC-007. The control plane is re-read on every tool call rather than folded into
+    # the loaded policy, so a disable takes effect on the next call with no restart.
+    # None means no control plane is wired up for this context (tests, library use).
+    controls: ControlPlane | None = None
 
     @classmethod
     def for_workspace(
