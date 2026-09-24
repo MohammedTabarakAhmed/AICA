@@ -274,3 +274,20 @@ def test_diff_include_untracked_respects_the_path_filter(repo: Path) -> None:
     (repo / "outside.py").write_text("def b():\n    return 2\n", encoding="utf-8")
     result = default_registry().call("git.diff", {"include_untracked": True, "path": "src"}, ctx)
     assert result.data["untracked_included"] == ["src/inside.py"]
+
+
+def test_diff_include_untracked_skips_the_agents_own_state(repo: Path) -> None:
+    """`.aica/` is the agent's bookkeeping, never part of the user's change.
+
+    Found by the review tests after the admin control plane started writing there: a
+    workspace without a .gitignore would otherwise offer the audit log up for review.
+    """
+    ctx = make_ctx(repo)
+    state = repo / ".aica" / "admin"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "history.jsonl").write_text('{"a": 1}\n', encoding="utf-8")
+    (repo / "src" / "real_change.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+
+    result = default_registry().call("git.diff", {"include_untracked": True}, ctx)
+    assert result.data["untracked_included"] == ["src/real_change.py"]
+    assert ".aica" not in result.output

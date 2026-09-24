@@ -81,6 +81,9 @@ class Principal(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     roles: list[Role] = Field(default_factory=list)
     policy: RbacPolicy = Field(default_factory=RbacPolicy)
+    # ADM-002: a repository owner administers it. Set by the caller that knows the
+    # project; the default False keeps this type usable without one.
+    owner: bool = False
 
     @property
     def permissions(self) -> frozenset[Permission]:
@@ -94,6 +97,10 @@ class Principal(BaseModel):
         granted: set[Permission] = set()
         for role in self.roles:
             granted |= _GRANTS[role]
+        if self.owner:
+            # ADM-002. Deliberately ADMINISTER only: owning a repository and being
+            # entitled to wave through a destructive action are different things.
+            granted.add(Permission.ADMINISTER)
         return frozenset(granted)
 
     def can(self, permission: Permission) -> bool:

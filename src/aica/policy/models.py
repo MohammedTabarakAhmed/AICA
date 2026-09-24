@@ -8,6 +8,7 @@ degrade to permissive defaults.
 
 from __future__ import annotations
 
+import hashlib
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
@@ -370,13 +371,51 @@ class RbacPolicy(BaseModel):
                 return list(binding.roles)
         return [self.default_role]
 
-    def principal(self, name: str) -> Principal:
+    def principal(self, name: str, owner: bool = False) -> Principal:
         # Imported here, not at module scope: this module is the policy *schema* and
         # must not depend on the packages that enforce it, or the enforcement layer
         # cannot import the schema it enforces.
         from aica.admin.rbac import Principal
 
-        return Principal(name=name, roles=self.roles_for(name), policy=self)
+        return Principal(name=name, roles=self.roles_for(name), policy=self, owner=owner)
+
+
+class ProjectPolicy(BaseModel):
+    """Who owns this repository and what it is (ADM-002).
+
+    BRD ADM-002 asks that "repositories have owners, policies and approved tools". The
+    policies and the approved tools are the rest of this file; what was missing is the
+    owner, and an owner is only meaningful if it *does* something. So an owner holds the
+    administer permission for this project without needing a separate role binding -
+    which is the one place identity is derived rather than assigned, because an
+    unowned-in-practice repository is how a policy file ends up with nobody able to
+    change it during an incident.
+
+    Owners still cannot approve agent actions: owning a repository and being entitled to
+    wave through a destructive command are different things (see ADM-001).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=1000)
+    repository: str = Field(default="", max_length=500)  # canonical URL or path
+    owners: list[str] = Field(default_factory=list)
+
+    @field_validator("owners")
+    @classmethod
+    def _non_empty_owners(cls, value: list[str]) -> list[str]:
+        cleaned = [v.strip() for v in value]
+        if any(not v for v in cleaned):
+            raise ValueError("owner names must be non-empty strings")
+        return list(dict.fromkeys(cleaned))
+
+    def is_owner(self, principal: str) -> bool:
+        return principal in self.owners
+
+    def describe(self) -> str:
+        who = ", ".join(self.owners) or "(no owner recorded)"
+        return f"{self.name or '(unnamed project)'} owned by {who}"
 
 
 class GitPolicy(BaseModel):
@@ -450,3 +489,22 @@ class Policy(BaseModel):
     secrets: SecretPolicy = Field(default_factory=SecretPolicy)  # SEC-004
     rbac: RbacPolicy = Field(default_factory=RbacPolicy)  # ADM-001, SEC-006
     quotas: QuotaPolicy = Field(default_factory=QuotaPolicy)  # ADM-005
+    project: ProjectPolicy = Field(default_factory=ProjectPolicy)  # ADM-002
+
+    def principal(self, name: str) -> Principal:
+        """The acting principal, with repository ownership applied (ADM-001, ADM-002).
+
+        Every surface derives the actor through here rather than through ``rbac``
+        directly, so an owner is never accidentally treated as an ordinary principal by
+        whichever caller forgot to look at the project section.
+        """
+        return self.rbac.principal(name, owner=self.project.is_owner(name))
+
+    def checksum(self) -> str:
+        """A stable digest of the effective policy (ADM-008).
+
+        Version numbers are declared by whoever edits the file and can be forgotten; a
+        checksum cannot. Recording both means a change that did not bump the version is
+        still visible as a change.
+        """
+        return hashlib.sha256(self.model_dump_json().encode("utf-8")).hexdigest()[:16]
