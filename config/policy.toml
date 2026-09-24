@@ -68,3 +68,23 @@ deny_in_production = []
 # inject_as = "GITHUB_TOKEN"   # optional: the name the receiving process expects
 # allowed_tools = ["shell.run"]  # which tools may receive it; empty means none
 # description = "Token for the release pipeline"
+
+[rbac]
+# ADM-001 / SEC-006. Off by default, so a single-developer workspace behaves exactly as
+# it did before: with `enabled = false` every principal holds every permission and
+# identity changes nothing. Turn it on for a shared deployment, where "approved" has to
+# mean "approved by someone entitled to", not "approved by whoever was running it".
+#
+# Roles: viewer (read), developer (read+write), approver (read+approve),
+# admin (read+administer). Approving is NOT implied by administering - they are
+# different jobs, and merging them turns four eyes into one pair. Roles only ever
+# narrow what the policy above already allows; they can never grant a withheld tool.
+enabled = false
+default_role = "viewer"     # what an unlisted principal gets: fail closed, not open
+separation_of_duties = true # SEC-006: whoever disabled a model/tool may not re-enable it
+# [[rbac.bindings]]
+# principal = "alice"
+# roles = ["developer"]
+# [[rbac.bindings]]
+# principal = "bob"
+# roles = ["approver", "admin"]

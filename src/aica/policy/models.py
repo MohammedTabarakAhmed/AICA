@@ -13,6 +13,8 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from aica.admin.rbac import RbacPolicy
+
 
 class Environment(StrEnum):
     """BRD section 16: environment classification."""
@@ -308,3 +310,4 @@ class Policy(BaseModel):
     browser: BrowserPolicy = Field(default_factory=BrowserPolicy)
     tools: ToolPolicy = Field(default_factory=ToolPolicy)  # SEC-002
     secrets: SecretPolicy = Field(default_factory=SecretPolicy)  # SEC-004
+    rbac: RbacPolicy = Field(default_factory=RbacPolicy)  # ADM-001, SEC-006

@@ -218,7 +218,8 @@ def create_app(settings: ApiSettings) -> FastAPI:
             session_id=session_id,
             index=index,
             databases_file=settings.databases_file,
-            controls=ControlPlane(root, actor=settings.actor),  # SEC-007
+            controls=ControlPlane(root, actor=settings.actor, rbac=policy.rbac),
+            principal=policy.rbac.principal(settings.actor),  # ADM-001
         )
         return ctx, index
 
@@ -705,7 +706,11 @@ def create_app(settings: ApiSettings) -> FastAPI:
     @app.get("/admin/controls", dependencies=guard)
     def list_controls() -> dict[str, Any]:
         """SEC-007: what is currently switched off."""
-        plane = ControlPlane(settings.workspace.resolve(), actor=settings.actor)
+        plane = ControlPlane(
+            settings.workspace.resolve(),
+            actor=settings.actor,
+            rbac=load_policy(settings.policy_file).rbac,
+        )
         try:
             return {
                 "disabled": [json.loads(e.model_dump_json()) for e in plane.load()],
@@ -716,7 +721,11 @@ def create_app(settings: ApiSettings) -> FastAPI:
     @app.post("/admin/controls", dependencies=guard)
     def set_control(request: ControlRequest) -> dict[str, Any]:
         """SEC-007 / ADM-003 / ADM-004: disable or re-enable, in effect on the next call."""
-        plane = ControlPlane(settings.workspace.resolve(), actor=settings.actor)
+        plane = ControlPlane(
+            settings.workspace.resolve(),
+            actor=settings.actor,
+            rbac=load_policy(settings.policy_file).rbac,
+        )
         try:
             kind = TargetKind(request.kind)
         except ValueError as exc:
@@ -737,7 +746,11 @@ def create_app(settings: ApiSettings) -> FastAPI:
     @app.get("/admin/history", dependencies=guard)
     def admin_history(limit: int = 50) -> dict[str, Any]:
         """ADM-010: administrative changes, attributable and reviewable."""
-        plane = ControlPlane(settings.workspace.resolve(), actor=settings.actor)
+        plane = ControlPlane(
+            settings.workspace.resolve(),
+            actor=settings.actor,
+            rbac=load_policy(settings.policy_file).rbac,
+        )
         return {
             "changes": [
                 json.loads(r.model_dump_json()) for r in plane.history(max(1, min(limit, 1000)))
