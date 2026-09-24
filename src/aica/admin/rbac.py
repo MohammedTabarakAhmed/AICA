@@ -31,16 +31,21 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
+from aica.policy.models import RbacPolicy, Role, RoleBinding
 
-class Role(StrEnum):
-    """The four roles ADM-001 needs. Ordered least to most capable."""
-
-    VIEWER = "viewer"  # read the repository and the records
-    DEVELOPER = "developer"  # run the agent: read, write, execute
-    APPROVER = "approver"  # decide sensitive actions (SAFE-001)
-    ADMIN = "admin"  # administer models, tools, policy and controls
+# Re-exported: the schema lives with the rest of the policy schema, the
+# behaviour lives here, and callers should not have to know which is which.
+__all__ = [
+    "NotPermitted",
+    "Permission",
+    "Principal",
+    "RbacPolicy",
+    "Role",
+    "RoleBinding",
+    "SeparationOfDuties",
+]
 
 
 class Permission(StrEnum):
@@ -66,57 +71,6 @@ class NotPermitted(PermissionError):
 
 class SeparationOfDuties(NotPermitted):
     """SEC-006: this principal may not confirm a change they proposed."""
-
-
-class RoleBinding(BaseModel):
-    """One principal and the roles assigned to them."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    principal: str = Field(min_length=1, max_length=200)
-    roles: list[Role] = Field(min_length=1)
-    note: str = Field(default="", max_length=500)
-
-    @field_validator("roles")
-    @classmethod
-    def _unique(cls, value: list[Role]) -> list[Role]:
-        return list(dict.fromkeys(value))
-
-
-class RbacPolicy(BaseModel):
-    """Role assignments (ADM-001) and the separation-of-duties switch (SEC-006).
-
-    ``enabled`` defaults to False so a single-developer workspace keeps working exactly
-    as before. Turning it on is what makes a shared deployment enforce identity; leaving
-    it off is an explicit local choice, not an accident, because nothing else changes.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = False
-    default_role: Role = Role.VIEWER  # what an unlisted principal gets: read-only
-    separation_of_duties: bool = True  # SEC-006, meaningful only when enabled
-    bindings: list[RoleBinding] = Field(default_factory=list)
-
-    @field_validator("bindings")
-    @classmethod
-    def _principals_unique(cls, value: list[RoleBinding]) -> list[RoleBinding]:
-        names = [b.principal for b in value]
-        duplicates = {n for n in names if names.count(n) > 1}
-        if duplicates:
-            raise ValueError(
-                f"a principal may appear once, with all their roles: {', '.join(sorted(duplicates))}"
-            )
-        return value
-
-    def roles_for(self, principal: str) -> list[Role]:
-        for binding in self.bindings:
-            if binding.principal == principal:
-                return list(binding.roles)
-        return [self.default_role]
-
-    def principal(self, name: str) -> Principal:
-        return Principal(name=name, roles=self.roles_for(name), policy=self)
 
 
 class Principal(BaseModel):

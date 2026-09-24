@@ -88,3 +88,27 @@ separation_of_duties = true # SEC-006: whoever disabled a model/tool may not re-
 # [[rbac.bindings]]
 # principal = "bob"
 # roles = ["approver", "admin"]
+
+[quotas]
+# ADM-005. Limits by user, team or project. Usage is counted from the audit log - the
+# same stream `aica usage` reports from - so the number that stops someone working is
+# the number an administrator is shown; a separate meter would drift.
+#
+# A quota bounds a WINDOW, not a run: [autonomy] already bounds a single run, and a
+# quota is the orthogonal control. Where several limits apply, the most restrictive
+# wins, so adding a team quota can only tighten what a user may do, never loosen it.
+# Exhaustion refuses and says which limit and when it resets - it never throttles.
+enabled = false
+# [[quotas.limits]]
+# scope = "principal"        # principal | team | project
+# name = "alice"
+# window_days = 1
+# max_actions = 500
+# max_model_calls = 200
+# max_commands = 100
+# max_tool_seconds = 3600
+# [[quotas.limits]]
+# scope = "team"
+# name = "core"
+# members = ["alice", "bob"]
+# max_model_calls = 1000
