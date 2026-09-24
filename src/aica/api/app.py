@@ -25,6 +25,7 @@ import os
 import secrets
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -33,6 +34,16 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from aica.admin.controls import ControlError, ControlPlane, TargetKind
+from aica.admin.rbac import Permission
+from aica.admin.reporting import (
+    AuditQuery,
+    RetentionScope,
+    apply_retention,
+    iter_events,
+    plan_workspace_retention,
+    summarize,
+)
+from aica.admin.reporting import search as audit_search
 from aica.agent.loop import STATE_KEY, AgentLoop, AgentState
 from aica.api.tasks import TaskManager, event_payload
 from aica.approvals import AllowAllApprover, ApprovalRequired, Approver, DenyAllApprover
@@ -148,6 +159,16 @@ class ControlRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     disabled: bool = True
     reason: str = Field(default="", max_length=1000)
+
+
+class RetentionRequest(BaseModel):
+    """ADM-009 / SEC-005: how long to keep audit files, and whether to actually delete."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keep_days: int = Field(default=90, ge=1, le=3650)
+    scope: str = Field(default="all", pattern="^(audit|sessions|context|all)$")
+    apply: bool = False  # a destructive default would be the wrong one
 
 
 class ApprovalDecision(BaseModel):
@@ -758,13 +779,43 @@ def create_app(settings: ApiSettings) -> FastAPI:
         }
 
     # ------------------------------------------------------------------ audit
+    def _audit_dir() -> Path:
+        return settings.workspace.resolve() / ".aica" / "audit"
+
     @app.get("/audit", dependencies=guard)
-    def read_audit(limit: int = 50) -> dict[str, Any]:
-        """Retrieve authorized activity records (BRD section 15 'Audit')."""
-        limit = max(1, min(limit, 1000))
-        sink = JsonlAuditSink(settings.workspace.resolve() / ".aica" / "audit")
-        events = list(sink.read_all())[-limit:]
+    def read_audit(
+        limit: int = 50,
+        actor: str | None = None,
+        category: str | None = None,
+        outcome: str | None = None,
+        tool: str | None = None,
+        model: str | None = None,
+        session_id: str | None = None,
+        days: int | None = None,
+        text: str | None = None,
+    ) -> dict[str, Any]:
+        """API-015 / ADM-007: search the audit trail, not just tail it.
+
+        Every filter is a field the record already carries, so a search can only ever
+        narrow what the log says - it cannot surface anything the record does not hold.
+        """
+        try:
+            query = AuditQuery(
+                actor=actor,
+                category=EventCategory(category) if category else None,
+                outcome=Outcome(outcome) if outcome else None,
+                tool=tool,
+                model=model,
+                session_id=session_id,
+                since=(datetime.now(UTC) - timedelta(days=days)) if days else None,
+                text=text,
+                limit=max(1, min(limit, 1000)),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        events = audit_search(iter_events(_audit_dir()), query)
         return {
+            "count": len(events),
             "events": [
                 {
                     "timestamp": e.timestamp.isoformat(),
@@ -773,11 +824,55 @@ def create_app(settings: ApiSettings) -> FastAPI:
                     "outcome": e.outcome.value,
                     "actor": e.actor,
                     "tool": e.tool,
+                    "model": e.model,
+                    "target": e.target,
                     "session_id": e.session_id,
+                    "duration_ms": e.duration_ms,
                 }
                 for e in events
-            ]
+            ],
         }
+
+    @app.get("/admin/usage", dependencies=guard)
+    def usage(days: int = 30) -> dict[str, Any]:
+        """ADM-006: usage and activity, counted from the audit log rather than a second meter."""
+        since = datetime.now(UTC) - timedelta(days=max(1, min(days, 3650)))
+        return summarize(iter_events(_audit_dir()), since=since).to_dict()
+
+    @app.post("/admin/retention", dependencies=guard)
+    def retention(request: RetentionRequest) -> dict[str, Any]:
+        """ADM-009 / SEC-005: remove audit files outside the window. Dry run by default."""
+        try:
+            plans = plan_workspace_retention(
+                settings.workspace.resolve(), request.keep_days, RetentionScope(request.scope)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        payload: dict[str, Any] = {
+            "applied": False,
+            "scopes": [
+                {
+                    "scope": plan.scope.value,
+                    "cutoff": plan.cutoff.isoformat(),
+                    "would_remove": [p.name for p in plan.remove],
+                    "keeping": len(plan.keep),
+                    "bytes": plan.removed_bytes,
+                }
+                for plan in plans
+            ],
+        }
+        if not request.apply:
+            return payload
+        policy = load_policy(settings.policy_file)
+        try:
+            policy.rbac.principal(settings.actor).require(
+                Permission.ADMINISTER, "apply audit retention"
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        removed = sum(apply_retention(plan) for plan in plans)
+        payload.update(applied=True, removed=removed)
+        return payload
 
     @app.get("/policy", dependencies=guard)
     def read_policy() -> dict[str, Any]:

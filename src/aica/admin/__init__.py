@@ -11,11 +11,45 @@ from aica.admin.controls import (
     Disabled,
     TargetKind,
 )
+from aica.admin.rbac import (
+    NotPermitted,
+    Permission,
+    Principal,
+    RbacPolicy,
+    Role,
+    RoleBinding,
+    SeparationOfDuties,
+)
+from aica.admin.reporting import (
+    AuditQuery,
+    RetentionPlan,
+    UsageReport,
+    apply_retention,
+    iter_events,
+    plan_retention,
+    search,
+    summarize,
+)
 
 __all__ = [
+    "AuditQuery",
     "ChangeRecord",
     "ControlError",
     "ControlPlane",
     "Disabled",
+    "NotPermitted",
+    "Permission",
+    "Principal",
+    "RbacPolicy",
+    "RetentionPlan",
+    "Role",
+    "RoleBinding",
+    "SeparationOfDuties",
     "TargetKind",
+    "UsageReport",
+    "apply_retention",
+    "iter_events",
+    "plan_retention",
+    "search",
+    "summarize",
 ]

@@ -24,7 +24,9 @@ Commands:
   aica sessions [--resume ID]        session history (MEM-001/003)
   aica admin disable|enable|status   switch a tool/model/integration off now (SEC-007)
   aica policy                        show the effective policy
-  aica audit [--limit N]             recent audit events (EXEC-007/MCP-006)
+  aica audit [--actor-filter A]      search the audit trail (ADM-007)
+  aica usage [--days N]              usage and activity reporting (ADM-006)
+  aica retention [--apply]           audit retention (ADM-009, SEC-005)
 """
 
 from __future__ import annotations
@@ -32,16 +34,27 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from aica import __version__
 from aica.admin.controls import ControlError, ControlPlane, TargetKind
+from aica.admin.rbac import Permission
+from aica.admin.reporting import (
+    AuditQuery,
+    RetentionScope,
+    apply_retention,
+    iter_events,
+    plan_workspace_retention,
+    search,
+    summarize,
+)
 from aica.agent.events import AgentEvent, CallbackSink, EventType
 from aica.agent.loop import STATE_KEY, AgentLoop, AgentState
 from aica.agent.plan import PlanError
 from aica.agent.subagents import Delegation, SubagentRole
 from aica.approvals import AllowAllApprover, ApprovalRequired, ConsoleApprover
-from aica.audit import AuditLog, JsonlAuditSink
+from aica.audit import AuditLog, EventCategory, JsonlAuditSink, Outcome
 from aica.chat.assistant import CodingAssistant
 from aica.chat.commit_message import InvalidCommitMessage, suggest_commit_message
 from aica.chat.session import Session, SessionStore
@@ -1124,17 +1137,76 @@ def cmd_policy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _audit_dir(args: argparse.Namespace) -> Path:
+    return Path(args.workspace).resolve() / ".aica" / "audit"
+
+
+def _since(days: int | None) -> datetime | None:
+    return None if not days else datetime.now(UTC) - timedelta(days=days)
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
-    ctx, _ = _context(args)
-    sink = JsonlAuditSink(ctx.workspace.root / ".aica" / "audit")
-    events = list(sink.read_all())[-args.limit :]
+    """ADM-007: search the audit trail on the fields the record already carries."""
+    directory = _audit_dir(args)
+    query = AuditQuery(
+        actor=args.actor_filter,
+        category=EventCategory(args.category) if args.category else None,
+        outcome=Outcome(args.outcome) if args.outcome else None,
+        tool=args.tool,
+        model=args.model,
+        session_id=args.session_filter,
+        since=_since(args.days),
+        text=" ".join(args.text) if args.text else None,
+        limit=args.limit,
+    )
+    events = search(iter_events(directory), query)
     if not events:
-        print("(no audit events)")
+        print("(no matching audit events)")
         return 1
     for e in events:
+        attribution = f"{e.actor}" + (f"/{e.session_id}" if e.session_id else "")
         print(
-            f"{e.timestamp:%Y-%m-%d %H:%M:%S}  {e.category.value:<16} {e.outcome.value:<17} {e.action[:70]}"
+            f"{e.timestamp:%Y-%m-%d %H:%M:%S}  {attribution:<24} "
+            f"{e.category.value:<16} {e.outcome.value:<17} {e.action[:60]}"
         )
+    return 0
+
+
+def cmd_usage(args: argparse.Namespace) -> int:
+    """ADM-006: what happened, by whom, over a window - counted from the audit log itself."""
+    report = summarize(iter_events(_audit_dir(args)), since=_since(args.days))
+    print(report.to_json() if args.json else report.render())
+    return 0
+
+
+def cmd_retention(args: argparse.Namespace) -> int:
+    """ADM-009 / SEC-005: delete aged artifacts. Dry run unless --apply.
+
+    Scopes are separate because the three things SEC-005 names mean different things:
+    the audit trail is evidence, a session is personal working state, and source-derived
+    context is a rebuildable cache. Deleting one should not force deleting the others.
+    """
+    root = Path(args.workspace).resolve()
+    try:
+        plans = plan_workspace_retention(root, args.keep_days, RetentionScope(args.scope))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    for plan in plans:
+        print(f"[{plan.scope.value}] {plan.render(applied=args.apply)}")
+    if not args.apply:
+        print("dry run; pass --apply to delete", file=sys.stderr)
+        return 0
+    ctx, _ = _context(args)
+    ctx.actor.require(Permission.ADMINISTER, "apply retention")
+    removed = sum(apply_retention(plan) for plan in plans)
+    ctx.audit.record(
+        category=EventCategory.ADMIN,
+        action=f"retention ({args.scope}): removed {removed} file(s)",
+        outcome=Outcome.SUCCESS,
+        details={"removed": removed, "keep_days": args.keep_days, "scope": args.scope},
+    )
+    print(f"removed {removed} file(s)")
     return 0
 
 
@@ -1395,9 +1467,33 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("policy", help="show the effective policy")
     sp.set_defaults(func=cmd_policy)
 
-    sp = sub.add_parser("audit", help="show recent audit events")
+    sp = sub.add_parser("audit", help="search the audit trail (ADM-007)")
+    sp.add_argument("--actor-filter", help="only events attributed to this actor")
+    sp.add_argument("--category", choices=[c.value for c in EventCategory])
+    sp.add_argument("--outcome", choices=[o.value for o in Outcome])
+    sp.add_argument("--tool", help="only events from this tool")
+    sp.add_argument("--model", help="only events answered by this model")
+    sp.add_argument("--session-filter", help="only events in this session")
+    sp.add_argument("--days", type=int, help="only the last N days")
+    sp.add_argument("--text", action="append", help="substring of the action, target or tool")
     sp.add_argument("--limit", type=int, default=25)
     sp.set_defaults(func=cmd_audit)
+
+    sp = sub.add_parser("usage", help="usage and activity reporting (ADM-006)")
+    sp.add_argument("--days", type=int, default=30, help="window in days (default: 30)")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_usage)
+
+    sp = sub.add_parser("retention", help="apply audit retention (ADM-009, SEC-005)")
+    sp.add_argument("--keep-days", type=int, default=90, help="keep this many days")
+    sp.add_argument(
+        "--scope",
+        default=RetentionScope.ALL.value,
+        choices=[s.value for s in RetentionScope],
+        help="audit trail, sessions, source-derived context, or all (default: all)",
+    )
+    sp.add_argument("--apply", action="store_true", help="actually delete (default: dry run)")
+    sp.set_defaults(func=cmd_retention)
 
     return p
 
