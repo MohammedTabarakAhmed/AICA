@@ -148,6 +148,7 @@ def execute(
 
 class RunCommand(Tool):
     name: ClassVar[str] = "shell.run"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Run a shell command inside the workspace. Commands are classified; destructive, "
         "privileged, external and secret-touching commands require approval per policy."

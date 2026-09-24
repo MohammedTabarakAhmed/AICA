@@ -47,6 +47,7 @@ class DiscoverTests(Tool):
 
 class RunTests(Tool):
     name: ClassVar[str] = "test.run"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Run tests and return a parsed outcome (counts, failures with locations, coverage). "
         "Either give an explicit command, or a kind to run the discovered command for that kind."

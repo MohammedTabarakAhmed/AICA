@@ -1044,6 +1044,9 @@ def cmd_policy(args: argparse.Namespace) -> int:
         f"max_steps: {p.autonomy.max_steps}  max_seconds: {p.autonomy.max_seconds}  max_test_retries: {p.autonomy.max_test_retries}"
     )
     print(f"allowed_tools: {', '.join(p.autonomy.allowed_tools)}")
+    print(f"tool deny: {', '.join(p.tools.deny) or '(none)'}")
+    print(f"tool allow (narrowing): {', '.join(p.tools.allow) or '(all in allowed groups)'}")
+    print(f"denied in production: {', '.join(p.tools.deny_in_production) or '(none)'}")
     print(f"allowed_directories: {', '.join(p.autonomy.allowed_directories)}")
     print(
         f"network: {p.network.mode.value}  hosts: {', '.join(p.network.allowed_hosts) or '(none)'}"

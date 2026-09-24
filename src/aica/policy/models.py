@@ -122,6 +122,73 @@ class ApprovalPolicy(BaseModel):
         return category in self.block
 
 
+class ToolPolicy(BaseModel):
+    """SEC-002: tool allow/deny, and SEC-001's teeth for the environment classification.
+
+    ``AutonomyLimits.allowed_tools`` is a *group* allowlist and stays the coarse control.
+    This adds the two things BRD section 16 asks for that a group allowlist cannot express:
+
+    * **A deny list that always wins.** Denying is not the absence of allowing: an operator
+      switching one tool off must not have to know, or keep in step with, every list that
+      might turn it back on. ``deny`` is therefore checked last and overrides everything,
+      including ``allow`` and the group allowlist. It is also the mechanism SEC-007's
+      immediate disable is built from.
+    * **Per-tool granularity.** A group is the wrong unit when ``git.status`` is fine and
+      ``git.clone`` is not. ``allow``, when non-empty, *narrows* within the groups already
+      permitted - it can never widen them, so a policy file cannot grant itself a tool the
+      group allowlist withholds.
+
+    ``deny_in_production`` is what makes the environment classification enforceable rather
+    than a label: the same policy file behaves differently once it says it is production.
+
+    Patterns are an exact tool name (``git.clone``), a group name (``database``), or a
+    prefix glob (``git.*``, ``db.w*``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    deny: list[str] = Field(default_factory=list)
+    allow: list[str] = Field(default_factory=list)
+    deny_in_production: list[str] = Field(default_factory=list)
+
+    @field_validator("deny", "allow", "deny_in_production")
+    @classmethod
+    def _non_empty_patterns(cls, value: list[str]) -> list[str]:
+        cleaned = [v.strip() for v in value]
+        if any(not v for v in cleaned):
+            raise ValueError("tool patterns must be non-empty strings")
+        return cleaned
+
+    @staticmethod
+    def _matches(pattern: str, tool: str, group: str) -> bool:
+        pattern = pattern.strip()
+        if pattern.endswith("*"):
+            return tool.startswith(pattern[:-1]) or group.startswith(pattern[:-1])
+        return pattern == tool or pattern == group
+
+    def denial_reason(
+        self, tool: str, group: str, environment: Environment = Environment.DEVELOPMENT
+    ) -> str | None:
+        """Why this tool may not run, or None when this policy permits it.
+
+        A reason rather than a bool: "not permitted by policy" leaves an operator guessing
+        which of several lists stopped it, and that guess is usually wrong.
+        """
+        for pattern in self.deny:
+            if self._matches(pattern, tool, group):
+                return f"denied by policy (tools.deny matched {pattern!r})"
+        if environment is Environment.PRODUCTION:
+            for pattern in self.deny_in_production:
+                if self._matches(pattern, tool, group):
+                    return (
+                        f"denied in the production environment "
+                        f"(tools.deny_in_production matched {pattern!r})"
+                    )
+        if self.allow and not any(self._matches(p, tool, group) for p in self.allow):
+            return "not in tools.allow, which narrows the permitted groups to a named set"
+        return None
+
+
 class GitPolicy(BaseModel):
     """GIT-003 / GIT-007 / GIT-010."""
 
@@ -189,3 +256,4 @@ class Policy(BaseModel):
     approval: ApprovalPolicy = Field(default_factory=ApprovalPolicy)
     git: GitPolicy = Field(default_factory=GitPolicy)
     browser: BrowserPolicy = Field(default_factory=BrowserPolicy)
+    tools: ToolPolicy = Field(default_factory=ToolPolicy)  # SEC-002

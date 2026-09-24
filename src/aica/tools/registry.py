@@ -22,9 +22,25 @@ class ToolRegistry:
     def group_of(self, name: str) -> str:
         return self._groups[name]
 
+    def is_mutating(self, name: str) -> bool:
+        """Whether this tool changes state outside the agent (SEC-001's production gate)."""
+        return type(self._tools[name]).mutating
+
+    def denial_reason(self, name: str, ctx: ToolContext) -> str | None:
+        """Why ``name`` may not be used here, or None when it may (SEC-001, SEC-002).
+
+        Two layers, both narrowing: the coarse group allowlist from ``AutonomyLimits``,
+        then the tool policy's allow/deny and its production denials. The deny list is
+        evaluated inside ``ToolPolicy`` and wins over everything, so switching a tool off
+        never depends on also remembering to remove it from an allowlist somewhere.
+        """
+        group = self._groups[name]
+        if group not in ctx.policy.autonomy.allowed_tools:
+            return f"group {group!r} is not in autonomy.allowed_tools"
+        return ctx.policy.tools.denial_reason(name, group, ctx.environment)
+
     def allowed(self, ctx: ToolContext) -> list[Tool]:
-        allowed_groups = set(ctx.policy.autonomy.allowed_tools)
-        return [t for n, t in self._tools.items() if self._groups[n] in allowed_groups]
+        return [t for n, t in self._tools.items() if self.denial_reason(n, ctx) is None]
 
     def schemas(self, ctx: ToolContext) -> list[dict[str, Any]]:
         return [t.schema() for t in self.allowed(ctx)]
@@ -33,10 +49,9 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if tool is None:
             raise KeyError(f"unknown tool {name!r}")
-        if self._groups[name] not in ctx.policy.autonomy.allowed_tools:
-            raise ToolNotAllowed(
-                f"tool {name!r} (group {self._groups[name]!r}) is not permitted by policy"
-            )
+        reason = self.denial_reason(name, ctx)
+        if reason is not None:
+            raise ToolNotAllowed(f"tool {name!r} (group {self._groups[name]!r}): {reason}")
         return tool
 
     def call(self, name: str, raw_args: dict[str, Any], ctx: ToolContext) -> ToolResult:

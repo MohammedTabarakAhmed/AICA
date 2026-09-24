@@ -168,6 +168,7 @@ class ReadFile(Tool):
 
 class WriteFile(Tool):
     name: ClassVar[str] = "fs.write"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = "Create or overwrite a file. Returns a reviewable unified diff."
 
     class Args(_Args):
@@ -200,6 +201,7 @@ class WriteFile(Tool):
 
 class EditFile(Tool):
     name: ClassVar[str] = "fs.edit"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Replace an exact text span in a file (must match exactly once unless replace_all)."
     )
@@ -251,6 +253,7 @@ class EditFile(Tool):
 
 class MoveFile(Tool):
     name: ClassVar[str] = "fs.move"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = "Rename or move a file within the workspace."
 
     class Args(_Args):
@@ -288,6 +291,7 @@ class MoveFile(Tool):
 
 class DeleteFile(Tool):
     name: ClassVar[str] = "fs.delete"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Delete a file. Protected by the file_delete approval category and snapshotted first."
     )
@@ -369,6 +373,7 @@ class Snapshot(Tool):
 
 class Rollback(Tool):
     name: ClassVar[str] = "fs.rollback"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = "Restore files from a snapshot (all files, or one path)."
 
     class Args(_Args):
