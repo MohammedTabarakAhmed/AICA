@@ -38,6 +38,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from aica.admin.rbac import Permission, Principal, RbacPolicy
+
 CONTROLS_FILE = "controls.json"
 HISTORY_FILE = "history.jsonl"
 
@@ -96,9 +98,20 @@ class ChangeRecord(BaseModel):
 class ControlPlane:
     """Reads and writes the disable state. Cheap enough to consult on every call."""
 
-    def __init__(self, root: str | Path, actor: str = "unknown") -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        actor: str = "unknown",
+        rbac: RbacPolicy | None = None,
+    ) -> None:
         self.directory = Path(root) / ".aica" / "admin"
         self.actor = actor
+        # ADM-001/SEC-006. None = no role policy wired up, which behaves exactly as before.
+        self.rbac = rbac or RbacPolicy()
+
+    @property
+    def principal(self) -> Principal:
+        return self.rbac.principal(self.actor)
 
     @property
     def controls_path(self) -> Path:
@@ -156,6 +169,10 @@ class ControlPlane:
 
     # ------------------------------------------------------------------ writing
     def disable(self, kind: TargetKind, name: str, reason: str = "") -> Disabled:
+        # ADM-001: administering is a role. Note there is no separation-of-duties check
+        # on *disabling*: switching something off is the safe direction, and requiring a
+        # second pair of eyes to stop a leaking model is how an incident gets longer.
+        self.principal.require(Permission.ADMINISTER, f"disable {kind.value} {name!r}")
         entry = Disabled(kind=kind, name=name, reason=reason, actor=self.actor)
         current = [e for e in self.load() if e.key != entry.key]
         self._write([*current, entry])
@@ -168,10 +185,17 @@ class ControlPlane:
         This only ever undoes a disable made here - it cannot grant something the policy
         file withholds, so the control plane can never be used to get around policy.
         """
+        self.principal.require(Permission.ADMINISTER, f"enable {kind.value} {name!r}")
         current = self.load()
         remaining = [e for e in current if not (e.kind is kind and e.name == name)]
         if len(remaining) == len(current):
             return False
+        # SEC-006. Re-enabling is the direction that restores capability, so it is the
+        # one that needs a second pair of eyes: the principal who switched a model or
+        # tool off may not be the one who turns it back on. Checked against the recorded
+        # disabler rather than anything in the request.
+        disabler = next(e.actor for e in current if e.kind is kind and e.name == name)
+        self.principal.require_distinct_from(disabler, f"{kind.value} re-enable")
         self._write(remaining)
         self._record("enable", kind, name, reason)
         return True

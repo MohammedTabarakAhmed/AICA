@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from aica.admin.controls import ControlPlane
+from aica.admin.rbac import Permission, Principal
 from aica.approvals import ApprovalRequest, ApprovalRequired, Approver, DenyAllApprover
 from aica.audit import AuditLog, EventCategory, InMemoryAuditSink, Outcome
 from aica.policy import CancellationToken, Policy
@@ -55,6 +56,10 @@ class ToolContext:
     # the loaded policy, so a disable takes effect on the next call with no restart.
     # None means no control plane is wired up for this context (tests, library use).
     controls: ControlPlane | None = None
+    # ADM-001. Who is acting. None means identity is not wired up for this context, which
+    # is the single-developer case; with RBAC disabled in policy a principal holds every
+    # permission anyway, so adding identity never changes existing behaviour by itself.
+    principal: Principal | None = None
 
     @classmethod
     def for_workspace(
@@ -78,6 +83,16 @@ class ToolContext:
     @property
     def environment(self) -> Environment:
         return self.policy.autonomy.environment
+
+    @property
+    def actor(self) -> Principal:
+        """The acting principal. Falls back to the audit log's actor name (ADM-001)."""
+        if self.principal is not None:
+            return self.principal
+        return self.policy.rbac.principal(self.audit.actor)
+
+    def require_permission(self, permission: Permission, action: str) -> None:
+        self.actor.require(permission, action)
 
     def require_approval(
         self, tool: str, action: str, categories: list[ActionCategory], **details: object
@@ -106,6 +121,10 @@ class ToolContext:
         request = ApprovalRequest(
             action=action, categories=tuple(needed), tool=tool, details=dict(details)
         )
+        # ADM-001: approving is a role, not a capability everyone running the agent has.
+        # Checked before the approver is consulted, so a principal who cannot approve is
+        # refused rather than being asked a question their answer would not count for.
+        self.actor.require(Permission.APPROVE, f"approve {action!r}")
         approved = self.approver.approve(request)
         self.audit.record(
             category=EventCategory.APPROVAL,

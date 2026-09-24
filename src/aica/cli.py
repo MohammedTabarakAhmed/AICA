@@ -94,7 +94,8 @@ def _context(args: argparse.Namespace) -> tuple[ToolContext, RepositoryIndex]:
         approver=approver,
         session_id=getattr(args, "session", None),
         index=index,
-        controls=ControlPlane(root, actor=args.actor),  # SEC-007
+        controls=ControlPlane(root, actor=args.actor, rbac=policy.rbac),  # SEC-007
+        principal=policy.rbac.principal(args.actor),  # ADM-001
     )
     return ctx, index
 
@@ -1045,7 +1046,7 @@ def cmd_admin(args: argparse.Namespace) -> int:
     enforcement points read this state per call rather than at startup.
     """
     root = Path(args.workspace).resolve()
-    plane = ControlPlane(root, actor=args.actor)
+    plane = ControlPlane(root, actor=args.actor, rbac=load_policy(args.policy).rbac)
     try:
         if args.admin_command == "status":
             disabled = plane.load()
@@ -1085,6 +1086,15 @@ def cmd_policy(args: argparse.Namespace) -> int:
     p = ctx.policy
     print(f"version: {p.version}")
     print(f"environment: {p.autonomy.environment.value}")
+    if p.rbac.enabled:
+        print(
+            f"rbac: enforced, default role {p.rbac.default_role.value}, "
+            f"separation of duties {'on' if p.rbac.separation_of_duties else 'off'}"
+        )
+        for binding in p.rbac.bindings:
+            print(f"  {binding.principal}: {', '.join(r.value for r in binding.roles)}")
+    else:
+        print("rbac: not enforced (single-developer workspace)")
     print(
         f"max_steps: {p.autonomy.max_steps}  max_seconds: {p.autonomy.max_seconds}  max_test_retries: {p.autonomy.max_test_retries}"
     )

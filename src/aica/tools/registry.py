@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from aica.admin.controls import TargetKind
+from aica.admin.rbac import Permission
 from aica.tools.base import Tool, ToolContext, ToolNotAllowed, ToolResult
 
 
@@ -45,7 +46,18 @@ class ToolRegistry:
                 return disabled.describe()
         if group not in ctx.policy.autonomy.allowed_tools:
             return f"group {group!r} is not in autonomy.allowed_tools"
-        return ctx.policy.tools.denial_reason(name, group, ctx.environment)
+        policy_reason = ctx.policy.tools.denial_reason(name, group, ctx.environment)
+        if policy_reason is not None:
+            return policy_reason
+        # ADM-001 last, and only ever narrowing: a role can withhold a tool policy
+        # allows, and can never grant one policy withholds.
+        needed = Permission.WRITE if self.is_mutating(name) else Permission.READ
+        if not ctx.actor.can(needed):
+            return (
+                f"{ctx.actor.name!r} lacks the {needed.value!r} permission "
+                f"(roles: {', '.join(r.value for r in ctx.actor.roles) or 'none'}) (ADM-001)"
+            )
+        return None
 
     def allowed(self, ctx: ToolContext) -> list[Tool]:
         return [t for n, t in self._tools.items() if self.denial_reason(n, ctx) is None]
