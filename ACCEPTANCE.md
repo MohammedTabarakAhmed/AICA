@@ -217,13 +217,13 @@ requirements are not lost. The BRD section is cited on each line.
 - [ ] ADM-008 policy management/versioning
 - [ ] ADM-009 retention management
 - [ ] ADM-010 configuration history
-- [ ] REV-001 diff review
-- [ ] REV-002 bug/edge-case review
-- [ ] REV-003 convention review
-- [ ] REV-004 test adequacy
-- [ ] REV-005 security review
-- [ ] REV-006 review summary
-- [ ] REV-007 source locations
+- [x] REV-001 diff review (`src/aica/review/`: the diff is parsed into files and post-image line numbers first, then reviewed by four checks; `aica review`, `POST /review`. New, untracked files are included by default - `git diff` cannot see them, and a new module is what an agent most often produces - by synthesising an all-added diff from the file rather than staging it, so a read-only question leaves the index untouched (GIT-010))
+- [x] REV-002 bug/edge-case review (the correctness check prompts for the defect classes worth naming: boundary and off-by-one errors, unreleased resources, errors swallowed or reported as success, state mutated while iterated, a contract whose callers were not updated)
+- [x] REV-003 convention review (the conventions detected for CC-004/MEM-004 are supplied to a check of their own, instructed to report a real departure and not anything a formatter or linter would fix)
+- [x] REV-004 test adequacy (two layers: a **deterministic** one that decides whether the change altered logic at all and whether any test covers the file - by a test changed in the same diff, matched on path *or* on the test's contents, or by a test in the repository that names the module - and a model check given that evidence and asked only for the part it cannot decide, which branch is unexercised. Comment, import and docstring-only changes are not reported as untested)
+- [x] REV-005 security review (a CWE-tagged pattern scan of the **added** lines only - SQL and shell injection, dynamic evaluation, unsafe deserialisation, disabled TLS verification, broken hashes, hardcoded credentials, path traversal, XSS, predictable randomness, swallowed exceptions - suppressible per line with `# nosec`, plus a model check asked for what a single-line pattern cannot see)
+- [x] REV-006 review summary (`ReviewReport` groups findings by severity and by file, renders text and JSON, and records provenance per finding: which check produced it and which model, or `None` for a deterministic one. The prose summary is prefixed with the deterministic counts, which cannot drift from the findings actually in the report; if the summary call fails the counts still stand)
+- [x] REV-007 source locations (**enforced, not hoped for**: every model-proposed finding is resolved against the parsed diff before it enters the report - exact line, or re-anchored to the nearest visible line within 6 rows and *marked* as re-anchored, or dropped with a recorded reason. A finding naming a file outside the diff, or a line outside its hunks, never reaches the reader, and the report states how many were discarded)
 - [x] EVAL-001 golden tasks (`evaluation/tasks/*.toml`: each task is one versioned, self-contained file - the repository it runs in is inline, so a task's history is visible in Git and running the suite never depends on a fixture someone edited by hand. Every task carries `id@vN` and a content checksum, and the suite has a checksum of its own. Four tasks ship: two bug/feature tasks, one retrieval task, and a control task that **cannot pass**, kept so the harness is shown to report failure)
 - [x] EVAL-002 correctness (a task's own `verify` command decides, run as a separate process in the workspace after the agent says it is finished; the agent's report is recorded beside it and never consulted for the verdict. Verified: the agent really edits the source and a real pytest child process confirms it)
 - [x] EVAL-003 completion rate (share of agent tasks that behaved as the suite expects; a control task meant to fail counts as correct when it fails, so adding honesty checks does not depress the score)
@@ -233,6 +233,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] EVAL-007 latency (measured per task; p50 and p95 by nearest rank, so a small suite reports a real measurement rather than an interpolation between runs that never happened. A gate can refuse a candidate that is too slow)
 - [x] EVAL-008 regression gates (`evaluate_gate`: thresholds, plus a baseline comparison that catches a candidate still above the bar but clearly worse; a task the baseline passed and the candidate fails is a regression whatever the aggregate says; **one false success fails the gate outright** at any score; and a gate may only be evaluated against the same suite revision. `aica eval gate` exits non-zero on failure so CI can use it)
 - [x] EVAL-009 reproducibility metadata (every report carries model name, exact served version, adapter, suite revision checksum, prompt checksum, policy version and the harness's own commit; reports round-trip to JSON with all of it)
+- [x] API-016 review a change (`POST /review`; derived here from BRD §11, which has no API section of its own). Takes a diff or reviews the working tree, optional `checks`/`focus`, and returns the grouped findings plus `complete` - so a client cannot read an empty `findings` list from a half-failed review as approval
 - [ ] API-015 audit retrieval (BRD §15)
 - [ ] SEC-005 configurable retention/deletion of sessions, source-derived context, trajectories (BRD §16)
 - [ ] SEC-006 administrative separation of duties for model/tool approval (BRD §16)
@@ -280,6 +281,52 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### Phase 3 step 3 — code review capability (REV-001..007) — 2026-09-24
+- New package `src/aica/review/`: `diff.py` (unified-diff parsing with post-image line
+  numbers, file classification), `findings.py` (`Severity`, `Category`, `Finding`,
+  `ReviewReport` grouped by severity and file), `adequacy.py` (deterministic REV-004),
+  `security.py` (CWE-tagged pattern scan, REV-005), `reviewer.py` (`CodeReviewer`, four
+  checks, anchoring, summary). Surfaces: `aica review` and `POST /review`.
+- Design decision: **a finding must resolve to a line in the diff or it is not reported.**
+  Model output is anchored against the parsed diff - exact, re-anchored within 6 rows and
+  marked as such, or dropped with a recorded reason and a count in the report. REV-007 is
+  therefore a property of the system rather than a hope about the model's arithmetic.
+- Design decision: **test adequacy and the security scan are deterministic first.** Both
+  run without a model, their findings carry `model=None`, and the model checks are given
+  that evidence instead of being asked to reconstruct it. A review with no model is a
+  narrower review, not a failed one, and the report's provenance shows which is which.
+- Design decision: **an incomplete review is not a clean one** (the TEST-009 rule applied
+  to review). A model error, unparseable output or a truncated diff sets `complete=False`;
+  `aica review` exits 6 for that, distinct from 2 (findings) and 0 (clean), so a pre-merge
+  hook cannot read a half-failed review as a pass.
+- Commands run: `ruff check`, `ruff format --check`, `mypy` (79 files, clean), `pytest`
+  (796 tests, all passing; 68 new). Review package line coverage 95%.
+- **Two real bugs found by running the reviewer on its own change**, which is the only
+  verification that matters for a tool like this:
+  1. The test-adequacy logic detector matched bare English words (`for`, `or`, `not`), so a
+     line of the CLI's *module docstring* was reported as untested changed logic. Keywords
+     are now matched only where code puts them - opening a statement - and both the false
+     positives and the true positives are pinned by parametrised tests.
+  2. `git diff` cannot see untracked files, so every new file in the change - the whole new
+     package - was invisible to the review. `git.diff` gained `include_untracked`, which
+     synthesises an all-added diff from the file's contents rather than running `git add -N`,
+     because writing to the index to answer a read-only question is what GIT-010 forbids. A
+     test asserts nothing is staged.
+  A third, milder one: the scanner flagged its own TLS pattern definitions. Fixed with the
+  `# nosec` suppression the module already supports, and a test asserts the scanner stays
+  clean against its own source.
+- The reviewer also correctly reported that `git_tool.py` had changed with no test changed
+  alongside it. That was true; `tests/test_tools_exec_git.py` gained four tests for the new
+  untracked-diff path, and the finding then cleared.
+- Unresolved: **no model has reviewed anything.** Every model-facing claim here rests on the
+  scripted adapter. The four model checks are exercised for prompt content, parsing,
+  anchoring, failure handling and summarisation, but the quality of a real model's findings
+  is unmeasured until `DEEPSEEK_API_KEY` is set. A run without a model reports `model: none`
+  and marks the model-dependent checks as not run.
+- Known limit, stated in the report rather than hidden: a diff over 60,000 characters is
+  truncated and the review is marked incomplete. Reviewing this very change hit that limit.
+- Branch: `feat/agent-platform`.
 
 ### Phase 3 step 2 — evaluation harness (EVAL-001..009) — 2026-09-23
 - Chosen over the review capability as the more future-proof next step: review is one feature,
