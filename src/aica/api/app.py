@@ -241,6 +241,7 @@ def create_app(settings: ApiSettings) -> FastAPI:
             databases_file=settings.databases_file,
             controls=ControlPlane(root, actor=settings.actor, rbac=policy.rbac),
             principal=policy.rbac.principal(settings.actor),  # ADM-001
+            audit_directory=root / ".aica" / "audit",  # ADM-005
         )
         return ctx, index
 

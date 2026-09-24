@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from aica.admin.controls import ControlPlane
+from aica.admin.quotas import QuotaExceeded
+from aica.admin.quotas import check as quota_check
 from aica.admin.rbac import Permission, Principal
+from aica.admin.reporting import iter_events
 from aica.approvals import ApprovalRequest, ApprovalRequired, Approver, DenyAllApprover
 from aica.audit import AuditLog, EventCategory, InMemoryAuditSink, Outcome
 from aica.policy import CancellationToken, Policy
@@ -60,6 +64,9 @@ class ToolContext:
     # is the single-developer case; with RBAC disabled in policy a principal holds every
     # permission anyway, so adding identity never changes existing behaviour by itself.
     principal: Principal | None = None
+    # ADM-005. Where the audit records this quota counts from live. None disables quota
+    # enforcement for this context, which is the in-memory/test case.
+    audit_directory: Path | None = None
 
     @classmethod
     def for_workspace(
@@ -93,6 +100,29 @@ class ToolContext:
 
     def require_permission(self, permission: Permission, action: str) -> None:
         self.actor.require(permission, action)
+
+    def check_quota(self, tool: str) -> None:
+        """ADM-005: refuse when the acting principal has exhausted an applicable limit.
+
+        Counted from the audit log, the same stream ADM-006 reports from, so the number
+        that stops someone working is the number an administrator is shown. Exhaustion
+        refuses rather than queueing or throttling: a quota that silently slows work is
+        indistinguishable from a broken system.
+        """
+        policy = self.policy.quotas
+        if not policy.enabled or self.audit_directory is None:
+            return
+        verdict = quota_check(policy, self.actor.name, iter_events(self.audit_directory))
+        if verdict.allowed:
+            return
+        self.audit.record(
+            category=EventCategory.POLICY_DECISION,
+            action=f"{tool}: {verdict.measure} quota exhausted",
+            outcome=Outcome.BLOCKED,
+            tool=tool,
+            details={"used": verdict.used, "cap": verdict.cap, "rule": "ADM-005"},
+        )
+        raise QuotaExceeded(f"{tool}: {verdict.reason()}")
 
     def require_approval(
         self, tool: str, action: str, categories: list[ActionCategory], **details: object
@@ -192,6 +222,7 @@ class Tool:
                 f"{self.name} in the production environment",
                 [ActionCategory.PRODUCTION],
             )
+        ctx.check_quota(self.name)
         started = time.monotonic()
         try:
             result = self.run(args, ctx)

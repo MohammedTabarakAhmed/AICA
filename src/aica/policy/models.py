@@ -9,11 +9,12 @@ degrade to permissive defaults.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from aica.admin.rbac import RbacPolicy
+if TYPE_CHECKING:
+    from aica.admin.rbac import Principal
 
 
 class Environment(StrEnum):
@@ -241,6 +242,143 @@ class SecretPolicy(BaseModel):
         return [d.name for d in self.definitions]
 
 
+class QuotaExceeded(PermissionError):
+    """ADM-005: the applicable limit for this window has been reached."""
+
+
+class QuotaScope(StrEnum):
+    """Who a limit applies to. ``PROJECT`` covers everyone in the workspace."""
+
+    PRINCIPAL = "principal"
+    TEAM = "team"
+    PROJECT = "project"
+
+
+class QuotaLimit(BaseModel):
+    """One limit: a scope, who it names, and what it bounds per day."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: QuotaScope = QuotaScope.PRINCIPAL
+    # The principal or team this names. Ignored (and may be empty) for PROJECT scope.
+    name: str = Field(default="", max_length=200)
+    # Members, for a team limit. A principal is in a team when named here.
+    members: list[str] = Field(default_factory=list)
+    window_days: int = Field(default=1, ge=1, le=365)
+
+    max_actions: int | None = Field(default=None, ge=0)  # any audited material action
+    max_model_calls: int | None = Field(default=None, ge=0)  # MODEL_CALL events
+    max_commands: int | None = Field(default=None, ge=0)  # COMMAND events
+    max_tool_seconds: int | None = Field(default=None, ge=0)  # recorded tool time
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
+    def applies_to(self, principal: str) -> bool:
+        if self.scope is QuotaScope.PROJECT:
+            return True
+        if self.scope is QuotaScope.TEAM:
+            return principal in self.members
+        return self.name == principal
+
+    def describe(self) -> str:
+        who = (
+            "the project"
+            if self.scope is QuotaScope.PROJECT
+            else f"{self.scope.value} {self.name!r}"
+        )
+        bounds = ", ".join(
+            f"{label}={value}"
+            for label, value in (
+                ("actions", self.max_actions),
+                ("model_calls", self.max_model_calls),
+                ("commands", self.max_commands),
+                ("tool_seconds", self.max_tool_seconds),
+            )
+            if value is not None
+        )
+        return f"{who} per {self.window_days}d: {bounds or 'no bounds set'}"
+
+
+class QuotaPolicy(BaseModel):
+    """The configured limits (ADM-005). Empty means no quotas, which is the default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    limits: list[QuotaLimit] = Field(default_factory=list)
+
+    def for_principal(self, principal: str) -> list[QuotaLimit]:
+        return [limit for limit in self.limits if limit.applies_to(principal)]
+
+
+class Role(StrEnum):
+    """The four roles ADM-001 needs. Ordered least to most capable."""
+
+    VIEWER = "viewer"  # read the repository and the records
+    DEVELOPER = "developer"  # run the agent: read, write, execute
+    APPROVER = "approver"  # decide sensitive actions (SAFE-001)
+    ADMIN = "admin"  # administer models, tools, policy and controls
+
+
+class RoleBinding(BaseModel):
+    """One principal and the roles assigned to them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    principal: str = Field(min_length=1, max_length=200)
+    roles: list[Role] = Field(min_length=1)
+    note: str = Field(default="", max_length=500)
+
+    @field_validator("roles")
+    @classmethod
+    def _unique(cls, value: list[Role]) -> list[Role]:
+        return list(dict.fromkeys(value))
+
+
+class RbacPolicy(BaseModel):
+    """Role assignments (ADM-001) and the separation-of-duties switch (SEC-006).
+
+    ``enabled`` defaults to False so a single-developer workspace keeps working exactly
+    as before. Turning it on is what makes a shared deployment enforce identity; leaving
+    it off is an explicit local choice, not an accident, because nothing else changes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    default_role: Role = Role.VIEWER  # what an unlisted principal gets: read-only
+    separation_of_duties: bool = True  # SEC-006, meaningful only when enabled
+    bindings: list[RoleBinding] = Field(default_factory=list)
+
+    @field_validator("bindings")
+    @classmethod
+    def _principals_unique(cls, value: list[RoleBinding]) -> list[RoleBinding]:
+        names = [b.principal for b in value]
+        duplicates = {n for n in names if names.count(n) > 1}
+        if duplicates:
+            raise ValueError(
+                f"a principal may appear once, with all their roles: {', '.join(sorted(duplicates))}"
+            )
+        return value
+
+    def roles_for(self, principal: str) -> list[Role]:
+        for binding in self.bindings:
+            if binding.principal == principal:
+                return list(binding.roles)
+        return [self.default_role]
+
+    def principal(self, name: str) -> Principal:
+        # Imported here, not at module scope: this module is the policy *schema* and
+        # must not depend on the packages that enforce it, or the enforcement layer
+        # cannot import the schema it enforces.
+        from aica.admin.rbac import Principal
+
+        return Principal(name=name, roles=self.roles_for(name), policy=self)
+
+
 class GitPolicy(BaseModel):
     """GIT-003 / GIT-007 / GIT-010."""
 
@@ -311,3 +449,4 @@ class Policy(BaseModel):
     tools: ToolPolicy = Field(default_factory=ToolPolicy)  # SEC-002
     secrets: SecretPolicy = Field(default_factory=SecretPolicy)  # SEC-004
     rbac: RbacPolicy = Field(default_factory=RbacPolicy)  # ADM-001, SEC-006
+    quotas: QuotaPolicy = Field(default_factory=QuotaPolicy)  # ADM-005

@@ -39,6 +39,7 @@ from pathlib import Path
 
 from aica import __version__
 from aica.admin.controls import ControlError, ControlPlane, TargetKind
+from aica.admin.quotas import report as quota_report
 from aica.admin.rbac import Permission
 from aica.admin.reporting import (
     AuditQuery,
@@ -109,6 +110,7 @@ def _context(args: argparse.Namespace) -> tuple[ToolContext, RepositoryIndex]:
         index=index,
         controls=ControlPlane(root, actor=args.actor, rbac=policy.rbac),  # SEC-007
         principal=policy.rbac.principal(args.actor),  # ADM-001
+        audit_directory=root / ".aica" / "audit",  # ADM-005 quota counting
     )
     return ctx, index
 
@@ -1174,8 +1176,18 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
 def cmd_usage(args: argparse.Namespace) -> int:
     """ADM-006: what happened, by whom, over a window - counted from the audit log itself."""
-    report = summarize(iter_events(_audit_dir(args)), since=_since(args.days))
-    print(report.to_json() if args.json else report.render())
+    events = list(iter_events(_audit_dir(args)))
+    report = summarize(events, since=_since(args.days))
+    quota_rows = quota_report(load_policy(args.policy).quotas, args.actor, events)
+    if args.json:
+        payload = {**report.to_dict(), "quotas": [row.to_dict() for row in quota_rows]}
+        print(json.dumps(payload, indent=2))
+        return 0
+    print(report.render())
+    if quota_rows:
+        print("## Quotas (ADM-005)")
+        for row in quota_rows:
+            print(f"  {row.describe()}")
     return 0
 
 
