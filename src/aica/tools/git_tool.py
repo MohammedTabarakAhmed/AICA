@@ -194,6 +194,56 @@ class GitSwitch(Tool):
 # ------------------------------------------------------------------ GIT-005
 
 
+MAX_UNTRACKED_BYTES = 200_000
+
+
+def _untracked_diff(ctx: ToolContext, path: str | None) -> tuple[str, list[str]]:
+    """Synthesise all-added diffs for untracked files, so new files can be reviewed.
+
+    ``git diff`` does not show a file Git has never seen, which means the output an agent
+    most often produces - a brand new module - is invisible to anything reading the diff.
+    Staging the file with ``git add -N`` would make it visible, but writing to the index
+    to answer a read-only question is exactly the kind of side effect GIT-010 exists to
+    prevent. The file's whole content is added by definition, so the diff is synthesised
+    from it instead: no index is touched and no git command is run.
+
+    Binary, empty and oversized files are skipped: a text diff has nothing to say about
+    them, and ``untracked_included`` in the result names exactly which files were added,
+    so a caller can see what the review did and did not cover.
+    """
+    assert ctx.git is not None
+    prefix = ctx.workspace.resolve(path).relative.as_posix() if path else None
+    blocks: list[str] = []
+    included: list[str] = []
+    for relative in sorted(ctx.git.status().untracked):
+        if prefix and not (relative == prefix or relative.startswith(prefix + "/")):
+            continue
+        try:
+            resolved = ctx.workspace.resolve(relative)
+        except (PermissionError, ValueError):
+            continue  # outside the authorized directories: not ours to review
+        target = resolved.absolute
+        if not target.is_file():
+            continue
+        try:
+            if target.stat().st_size > MAX_UNTRACKED_BYTES:
+                continue
+            content = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue  # binary or unreadable: nothing a text diff can say about it
+        lines = content.splitlines()
+        if not lines:
+            continue
+        body = "\n".join(f"+{line}" for line in lines)
+        blocks.append(
+            f"diff --git a/{relative} b/{relative}\n"
+            f"new file mode 100644\n--- /dev/null\n+++ b/{relative}\n"
+            f"@@ -0,0 +1,{len(lines)} @@\n{body}\n"
+        )
+        included.append(relative)
+    return "".join(blocks), included
+
+
 class GitDiff(Tool):
     name: ClassVar[str] = "git.diff"
     description: ClassVar[str] = (
@@ -205,6 +255,10 @@ class GitDiff(Tool):
         path: str | None = None
         base: str | None = Field(
             default=None, description="compare against this ref instead of the index"
+        )
+        include_untracked: bool = Field(
+            default=False,
+            description="also emit new, untracked files as all-added diffs (REV-001)",
         )
 
     def run(self, args: BaseModel, ctx: ToolContext) -> ToolResult:
@@ -218,6 +272,10 @@ class GitDiff(Tool):
         if args.path:
             argv += ["--", ctx.workspace.resolve(args.path).relative.as_posix()]
         out = _git(ctx, *argv)
+        untracked: list[str] = []
+        if args.include_untracked and not args.staged and not args.base:
+            extra, untracked = _untracked_diff(ctx, args.path)
+            out += extra
         stat = _git(
             ctx,
             "diff",
@@ -226,7 +284,15 @@ class GitDiff(Tool):
             *([args.base] if args.base else []),
             check=False,
         )
-        return ToolResult(output=out, data={"diff": out, "stat": stat, "changed": bool(out)})
+        return ToolResult(
+            output=out,
+            data={
+                "diff": out,
+                "stat": stat,
+                "changed": bool(out),
+                "untracked_included": untracked,
+            },
+        )
 
 
 # ------------------------------------------------------------------ GIT-007
