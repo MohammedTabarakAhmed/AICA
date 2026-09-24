@@ -218,3 +218,59 @@ def test_git_tools_require_repository(ws: Path) -> None:
     ctx = make_ctx(ws)  # not a git repo
     with pytest.raises(Exception, match="not a Git repository"):
         default_registry().call("git.status", {}, ctx)
+
+
+def test_diff_include_untracked_emits_new_files_without_staging(repo: Path) -> None:
+    """REV-001: a brand new file is invisible to `git diff` until it is staged.
+
+    The diff is synthesised from the file's contents rather than by running `git add -N`,
+    so answering a read-only question leaves the index untouched (GIT-010).
+    """
+    ctx = make_ctx(repo)
+    reg = default_registry()
+    (repo / "src" / "new_module.py").write_text("def added():\n    return 1\n", encoding="utf-8")
+
+    without = reg.call("git.diff", {}, ctx)
+    assert "new_module.py" not in without.output
+    assert without.data["untracked_included"] == []
+
+    result = reg.call("git.diff", {"include_untracked": True}, ctx)
+    assert result.data["untracked_included"] == ["src/new_module.py"]
+    assert "+++ b/src/new_module.py" in result.output
+    assert "--- /dev/null" in result.output
+    assert "+def added():" in result.output
+
+    # Nothing was staged.
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert staged.strip() == ""
+
+
+def test_diff_include_untracked_skips_binary_and_oversized_files(repo: Path) -> None:
+    ctx = make_ctx(repo)
+    (repo / "blob.bin").write_bytes(b"\x00\x01\x02\xff\xfe\xfd")
+    (repo / "huge.txt").write_text("x" * 300_000, encoding="utf-8")
+    result = default_registry().call("git.diff", {"include_untracked": True}, ctx)
+    assert result.data["untracked_included"] == []
+
+
+def test_diff_include_untracked_is_ignored_for_staged_and_base_diffs(repo: Path) -> None:
+    """Untracked files have no meaning against the index or a ref, so they are not mixed in."""
+    ctx = make_ctx(repo)
+    (repo / "src" / "new_module.py").write_text("def added():\n    return 1\n", encoding="utf-8")
+    staged = default_registry().call("git.diff", {"include_untracked": True, "staged": True}, ctx)
+    assert staged.data["untracked_included"] == []
+    assert "new_module.py" not in staged.output
+
+
+def test_diff_include_untracked_respects_the_path_filter(repo: Path) -> None:
+    ctx = make_ctx(repo)
+    (repo / "src" / "inside.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    (repo / "outside.py").write_text("def b():\n    return 2\n", encoding="utf-8")
+    result = default_registry().call("git.diff", {"include_untracked": True, "path": "src"}, ctx)
+    assert result.data["untracked_included"] == ["src/inside.py"]
