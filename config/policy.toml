@@ -44,3 +44,16 @@ allow_localhost = true
 allowed_hosts = []           # e.g. ["*.staging.example.com"]
 max_seconds = 30.0
 screenshot_dir = ".aica/browser"
+
+[tools]
+# SEC-002. `deny` always wins - over `allow`, over `autonomy.allowed_tools`, over
+# everything - so switching a tool off never depends on also remembering to remove it
+# from an allowlist somewhere. `allow`, when non-empty, narrows *within* the groups
+# `autonomy.allowed_tools` already permits; it can never widen them.
+# Patterns: an exact tool name ("git.clone"), a group ("database"), or a prefix ("git.*").
+deny = []
+allow = []
+# SEC-001. What the environment classification actually changes, beyond the "production"
+# approval gate that already applies to every mutating tool once environment =
+# "production". Example: deny_in_production = ["shell", "database"]
+deny_in_production = []

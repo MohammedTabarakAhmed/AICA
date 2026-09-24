@@ -151,6 +151,7 @@ class GitBranches(Tool):
 
 class GitCreateBranch(Tool):
     name: ClassVar[str] = "git.create_branch"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = "Create and switch to a new working branch."
 
     class Args(_Args):
@@ -170,6 +171,7 @@ class GitCreateBranch(Tool):
 
 class GitSwitch(Tool):
     name: ClassVar[str] = "git.switch"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Switch to an existing branch (refuses if uncommitted changes would be lost)."
     )
@@ -300,6 +302,7 @@ class GitDiff(Tool):
 
 class GitCommit(Tool):
     name: ClassVar[str] = "git.commit"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Stage the given paths (or all changes) and commit. Protected branches require approval with the diff shown."
     )
@@ -351,6 +354,7 @@ class GitCommit(Tool):
 
 class GitRevert(Tool):
     name: ClassVar[str] = "git.revert"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Create a revert commit for a commit made by the agent (non-destructive undo)."
     )
@@ -377,6 +381,7 @@ class GitRevert(Tool):
 
 class GitDiscardChanges(Tool):
     name: ClassVar[str] = "git.discard"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Discard uncommitted changes in given paths (DESTRUCTIVE; approval required)."
     )
@@ -440,6 +445,7 @@ class GitPullRequestContent(Tool):
 
 class GitClone(Tool):
     name: ClassVar[str] = "git.clone"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Clone an authorized repository into the workspace (EXTERNAL; approval and network policy apply)."
     )

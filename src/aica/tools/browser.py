@@ -177,6 +177,7 @@ class _SessionArgs(_Args):
 
 class BrowserOpen(Tool):
     name: ClassVar[str] = "browser.open"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Open a browser on an authorized application URL and return a session id. "
         "Non-local hosts must be allowlisted in policy and require approval."
@@ -263,6 +264,7 @@ def _attach_listeners(session: BrowserSession) -> None:
 
 class BrowserNavigate(Tool):
     name: ClassVar[str] = "browser.navigate"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = "Navigate an open session to another authorized URL."
 
     class Args(_SessionArgs):
@@ -289,6 +291,7 @@ class BrowserNavigate(Tool):
 
 class BrowserClick(Tool):
     name: ClassVar[str] = "browser.click"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = "Click an element identified by a CSS or text selector."
 
     class Args(_SessionArgs):
@@ -313,6 +316,7 @@ class BrowserClick(Tool):
 
 class BrowserFill(Tool):
     name: ClassVar[str] = "browser.fill"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = "Type a value into an input, textarea or contenteditable element."
 
     class Args(_SessionArgs):
@@ -338,6 +342,7 @@ class BrowserFill(Tool):
 
 class BrowserPress(Tool):
     name: ClassVar[str] = "browser.press"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = "Press a key (Enter, Tab, Escape, ...) on an element or the page."
 
     class Args(_SessionArgs):

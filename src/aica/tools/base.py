@@ -127,6 +127,12 @@ class Tool:
     name: ClassVar[str]
     description: ClassVar[str]
     Args: ClassVar[type[BaseModel]]
+    # SEC-001: does running this tool change anything outside the agent's own memory?
+    # Declared per tool because only the tool knows; ``invoke`` uses it to put every
+    # mutating call behind the production approval gate, rather than relying on each
+    # tool to remember. A tool that writes and leaves this False is the bug this
+    # attribute exists to make visible.
+    mutating: ClassVar[bool] = False
 
     def run(self, args: BaseModel, ctx: ToolContext) -> ToolResult:
         raise NotImplementedError
@@ -151,6 +157,17 @@ class Tool:
         """Validate → policy → run → audit. The only entry point callers should use."""
         ctx.cancel.raise_if_cancelled()
         args = self.parse_args(raw)
+        # SEC-001. A tool that changes something is gated in production even when nothing
+        # about this particular call is otherwise sensitive: writing an ordinary file is
+        # unremarkable in development and is exactly what an environment classification
+        # exists to stop happening unattended against a live system. Tools that already
+        # categorise the call add their own categories on top.
+        if self.mutating and ctx.environment is Environment.PRODUCTION:
+            ctx.require_approval(
+                self.name,
+                f"{self.name} in the production environment",
+                [ActionCategory.PRODUCTION],
+            )
         started = time.monotonic()
         try:
             result = self.run(args, ctx)
