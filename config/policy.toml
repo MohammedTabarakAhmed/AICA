@@ -57,3 +57,14 @@ allow = []
 # approval gate that already applies to every mutating tool once environment =
 # "production". Example: deny_in_production = ["shell", "database"]
 deny_in_production = []
+
+# SEC-004. Controlled secret injection. A caller NAMES a secret; it never supplies one,
+# because a value passed as a tool argument has already travelled through the prompt, the
+# plan and the session file before any gate sees it. Values live in the host environment
+# only - never here - and every injection is an audited SECRET_ACCESS approval.
+# [[secrets.definitions]]
+# name = "deploy_token"        # the name a tool asks for
+# env_var = "DEPLOY_TOKEN"     # where the value is read from, at the moment of use
+# inject_as = "GITHUB_TOKEN"   # optional: the name the receiving process expects
+# allowed_tools = ["shell.run"]  # which tools may receive it; empty means none
+# description = "Token for the release pipeline"

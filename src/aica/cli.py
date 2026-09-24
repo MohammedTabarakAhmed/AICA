@@ -1047,6 +1047,15 @@ def cmd_policy(args: argparse.Namespace) -> int:
     print(f"tool deny: {', '.join(p.tools.deny) or '(none)'}")
     print(f"tool allow (narrowing): {', '.join(p.tools.allow) or '(all in allowed groups)'}")
     print(f"denied in production: {', '.join(p.tools.deny_in_production) or '(none)'}")
+    if p.secrets.definitions:
+        from aica.safety.secrets import SecretStore
+
+        for entry in SecretStore(p.secrets).describe():
+            state = "available" if entry["available"] else "NOT SET"
+            tools = ", ".join(entry["allowed_tools"]) or "(no tool)"  # type: ignore[arg-type]
+            print(f"secret {entry['name']}: {entry['env_var']} [{state}] -> {tools}")
+    else:
+        print("secrets: (none declared)")
     print(f"allowed_directories: {', '.join(p.autonomy.allowed_directories)}")
     print(
         f"network: {p.network.mode.value}  hosts: {', '.join(p.network.allowed_hosts) or '(none)'}"

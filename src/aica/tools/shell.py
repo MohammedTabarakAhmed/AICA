@@ -14,15 +14,24 @@ import subprocess  # noqa: S404 - controlled execution is the purpose of this to
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from aica.audit import EventCategory, Outcome
 from aica.policy import CancellationToken
-from aica.safety.commands import Decision, categories_for, classify_command, decide
+from aica.policy.models import ActionCategory
+from aica.safety.commands import (
+    CommandClass,
+    Decision,
+    categories_for,
+    classify_command,
+    decide,
+)
+from aica.safety.network import check_destinations
 from aica.safety.redaction import redact
+from aica.safety.secrets import SecretInjection, SecretStore
 from aica.tools.base import Tool, ToolContext, ToolResult
 
 # Host environment variables that are safe and useful to inherit. Credentials are not.
@@ -163,6 +172,14 @@ class RunCommand(Tool):
         env: dict[str, str] = Field(
             default_factory=dict, description="task-scoped environment overrides"
         )
+        # SEC-004: secrets are NAMED, never supplied. A value passed as an argument would
+        # already have travelled through the prompt, the plan and the session file before
+        # any gate saw it; a name carries nothing.
+        secrets: list[str] = Field(
+            default_factory=list,
+            max_length=10,
+            description="names of policy-declared secrets to inject into the environment",
+        )
 
     def run(self, args: BaseModel, ctx: ToolContext) -> ToolResult:
         assert isinstance(args, self.Args)
@@ -170,6 +187,22 @@ class RunCommand(Tool):
         if not cwd.is_dir():
             raise NotADirectoryError(args.cwd)
         classification = classify_command(args.command)
+        # SEC-003. A destination check before the approval gate, not instead of it:
+        # approving "this command talks to the network" never meant approving where it
+        # was going, and a host outside the allowlist is refused rather than offered for
+        # approval. Only commands that actually invoke a network client are checked, and
+        # one whose host cannot be read (``git push``) keeps the gate it already had.
+        if classification.command_class is CommandClass.EXTERNAL:
+            check = check_destinations(args.command, ctx.policy.network)
+            if not check.ok:
+                ctx.audit.record(
+                    category=EventCategory.POLICY_DECISION,
+                    action=args.command,
+                    outcome=Outcome.BLOCKED,
+                    tool=self.name,
+                    details={"denied_hosts": list(check.denied), "rule": "SEC-003"},
+                )
+                raise PermissionError(f"{self.name}: {check.reason()}")
         decision = decide(classification, ctx.policy.approval, ctx.environment)
         cats = categories_for(classification, ctx.environment)
         if decision is Decision.BLOCK:
@@ -192,13 +225,33 @@ class RunCommand(Tool):
                 classification=classification.command_class.value,
                 reasons=", ".join(classification.reasons),
             )
+        injection = SecretInjection(env={}, names=())
+        if args.secrets:
+            # Resolution first: a name policy does not permit is refused before anyone is
+            # asked to approve it, so the approval prompt only ever lists real secrets.
+            injection = SecretStore(ctx.policy.secrets).prepare(args.secrets, self.name)
+            ctx.require_approval(
+                self.name,
+                f"inject secret(s) {', '.join(injection.names)} into: {args.command}",
+                [ActionCategory.SECRET_ACCESS],
+                secrets=list(injection.names),  # names only; the values never leave the store
+            )
         result = execute(
             args.command,
             str(cwd),
             timeout_seconds=min(args.timeout_seconds, float(ctx.policy.autonomy.max_seconds)),
-            env=build_environment(args.env),
+            env=build_environment({**args.env, **injection.env}),
             cancel=ctx.cancel,
         )
+        if injection.env:
+            # A command handed a real credential will sometimes echo it back, and pattern
+            # redaction only catches formats it recognises. The exact values are known
+            # here, so they are removed literally before anything is captured or audited.
+            result = replace(
+                result,
+                stdout=injection.scrub(result.stdout),
+                stderr=injection.scrub(result.stderr),
+            )
         # EXEC-007: record command + outcome (redacted at the audit boundary).
         ctx.audit.record(
             category=EventCategory.COMMAND,

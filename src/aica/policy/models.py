@@ -189,6 +189,56 @@ class ToolPolicy(BaseModel):
         return None
 
 
+class SecretDefinition(BaseModel):
+    """One secret the operator has declared (SEC-004)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z][A-Za-z0-9_.-]*$")
+    env_var: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    # Which tools may receive it. Empty means none: a secret nobody may use is the safe
+    # reading of an operator who declared one and forgot to say where it goes.
+    allowed_tools: list[str] = Field(default_factory=list)
+    # The variable name the receiving process sees. Defaults to ``env_var``, but a tool
+    # often expects a different name than the one the operator's machine uses.
+    inject_as: str | None = Field(default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    description: str = Field(default="", max_length=500)
+
+    @property
+    def target_var(self) -> str:
+        return self.inject_as or self.env_var
+
+    def permits(self, tool: str) -> bool:
+        return any(
+            tool == pattern or (pattern.endswith("*") and tool.startswith(pattern[:-1]))
+            for pattern in self.allowed_tools
+        )
+
+
+class SecretPolicy(BaseModel):
+    """The declared secrets. Values are never here - only where to find them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    definitions: list[SecretDefinition] = Field(default_factory=list)
+
+    @field_validator("definitions")
+    @classmethod
+    def _names_unique(cls, value: list[SecretDefinition]) -> list[SecretDefinition]:
+        names = [d.name for d in value]
+        duplicates = {n for n in names if names.count(n) > 1}
+        if duplicates:
+            raise ValueError(f"duplicate secret names: {', '.join(sorted(duplicates))}")
+        return value
+
+    def get(self, name: str) -> SecretDefinition | None:
+        return next((d for d in self.definitions if d.name == name), None)
+
+    @property
+    def names(self) -> list[str]:
+        return [d.name for d in self.definitions]
+
+
 class GitPolicy(BaseModel):
     """GIT-003 / GIT-007 / GIT-010."""
 
@@ -257,3 +307,4 @@ class Policy(BaseModel):
     git: GitPolicy = Field(default_factory=GitPolicy)
     browser: BrowserPolicy = Field(default_factory=BrowserPolicy)
     tools: ToolPolicy = Field(default_factory=ToolPolicy)  # SEC-002
+    secrets: SecretPolicy = Field(default_factory=SecretPolicy)  # SEC-004
