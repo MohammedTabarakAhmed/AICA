@@ -10,6 +10,7 @@ Commands:
   aica conventions [--set K=V]       project conventions and context (CC-004, MEM-004)
   aica commit-message                model-written, validated commit message (GIT-006)
   aica gen-tests --file F            propose tests for a file (TEST-007)
+  aica review [--base REF]           review a change for bugs, conventions, tests, security (REV-001..007)
   aica task <description>            run an agent task end to end (AG-001..010)
   aica browse --url U                inspect a running app in a real browser (WEB-001..005)
   aica db schema|query|explain       controlled database access (DB-001..007)
@@ -51,6 +52,8 @@ from aica.models.routing import ModelRouter, TaskKind
 from aica.policy import load_policy
 from aica.policy.budget import RunBudget
 from aica.rag.index import RepositoryIndex
+from aica.review.findings import Severity, severity_rank
+from aica.review.reviewer import DEFAULT_CHECKS, CodeReviewer, ReviewCheck, ReviewRequest
 from aica.testing.browser_tests import generate_browser_test
 from aica.testing.generation import GenerationError, generate_tests
 from aica.tools import ToolContext, default_registry
@@ -370,6 +373,86 @@ def cmd_gen_tests(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return 0
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """REV-001..007: review a change. Read-only - nothing is edited, staged or committed.
+
+    The exit code is the useful part for a pre-merge hook: 0 clean, 2 findings at or above
+    ``--fail-on``, 6 when the review could not be completed. 6 is deliberately distinct: a
+    review that failed halfway is not a review that passed, and a gate that cannot tell the
+    two apart is worse than no gate (TEST-009).
+    """
+    ctx, _ = _context(args)
+    registry = default_registry()
+    payload: dict[str, object] = {}
+    if args.staged:
+        payload["staged"] = True
+    if args.base:
+        payload["base"] = args.base
+    if args.path:
+        payload["path"] = args.path
+    # New files are the bulk of what an agent produces, and `git diff` cannot see them
+    # until they are staged. Reviewing them is the default here; --no-untracked opts out.
+    payload["include_untracked"] = not args.no_untracked
+    result = registry.call("git.diff", payload, ctx)
+    diff = result.output
+    if not diff.strip():
+        print("no changes to review", file=sys.stderr)
+        return 0
+    included = result.data.get("untracked_included") or []
+    if included:
+        print(f"including {len(included)} untracked file(s) in the review", file=sys.stderr)
+
+    try:
+        adapter, _ = _adapter(args, ctx, TaskKind.REVIEW)
+    except (ModelError, PermissionError) as exc:
+        if args.strict:
+            print(
+                f"model unavailable and --strict forbids a static-only review: {exc}",
+                file=sys.stderr,
+            )
+            return 6
+        print(f"model unavailable: {exc}; running the static checks only", file=sys.stderr)
+        adapter = None
+
+    checks = tuple(ReviewCheck(name) for name in args.check) if args.check else DEFAULT_CHECKS
+    reviewer = CodeReviewer(
+        adapter,
+        root=ctx.workspace.root,
+        conventions=project_conventions_block(
+            ctx.workspace.root, ProjectContextStore(ctx.workspace.root).load()
+        ),
+    )
+    report = reviewer.review(
+        ReviewRequest(
+            diff=diff,
+            checks=checks,
+            focus=" ".join(args.focus or []),
+            summarize=not args.no_summary,
+        )
+    )
+    ctx.audit.record(
+        category="task",
+        action="review.completed",
+        outcome="success" if report.complete else "failure",
+        model=report.model,
+        details={
+            "files": len(report.files_reviewed),
+            "findings": len(report.findings),
+            "counts": report.counts(),
+            "complete": report.complete,
+            "checks_failed": sorted(report.checks_failed),
+            "model": report.model,
+        },
+    )
+
+    print(report.to_json() if args.json else report.render(show_dropped=args.show_dropped))
+    if not report.complete:
+        return 6
+    threshold = Severity(args.fail_on)
+    blocking = [f for f in report.findings if severity_rank(f.severity) <= severity_rank(threshold)]
+    return 2 if blocking else 0
 
 
 def cmd_task(args: argparse.Namespace) -> int:
@@ -1067,6 +1150,35 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--focus", action="append", help="behaviour to focus on")
     sp.add_argument("--model")
     sp.set_defaults(func=cmd_gen_tests)
+
+    sp = sub.add_parser("review", help="review a change (REV-001..007); nothing is written")
+    sp.add_argument("--base", help="review the change against this ref instead of the index")
+    sp.add_argument("--staged", action="store_true", help="review staged changes only")
+    sp.add_argument("--path", help="restrict the diff to this path")
+    sp.add_argument(
+        "--no-untracked",
+        action="store_true",
+        help="do not review new, untracked files (they are included by default)",
+    )
+    sp.add_argument(
+        "--check",
+        action="append",
+        choices=[c.value for c in ReviewCheck],
+        help="run only these checks (repeatable; default: all)",
+    )
+    sp.add_argument("--focus", action="append", help="what the reviewer wants attention on")
+    sp.add_argument("--json", action="store_true", help="machine-readable report")
+    sp.add_argument("--show-dropped", action="store_true", help="list findings that were discarded")
+    sp.add_argument("--no-summary", action="store_true", help="skip the prose summary call")
+    sp.add_argument(
+        "--fail-on",
+        default=Severity.HIGH.value,
+        choices=[s.value for s in Severity],
+        help="exit 2 when a finding at or above this severity is reported (default: high)",
+    )
+    sp.add_argument("--strict", action="store_true", help="fail rather than review without a model")
+    sp.add_argument("--model")
+    sp.set_defaults(func=cmd_review)
 
     sp = sub.add_parser("task", help="run an agent task (plan, execute, verify, report)")
     sp.add_argument("task", nargs="*", default=[], help="what to do, in plain language")
