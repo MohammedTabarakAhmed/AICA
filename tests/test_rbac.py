@@ -17,6 +17,7 @@ from aica.admin.rbac import (
 )
 from aica.approvals import AllowAllApprover
 from aica.policy import AutonomyLimits, Policy
+from aica.policy.models import ProjectPolicy
 from aica.tools import ToolContext, default_registry
 from aica.tools.base import ToolNotAllowed
 from tests.test_tools_fs import make_ctx
@@ -195,3 +196,73 @@ def test_separation_of_duties_is_inert_when_rbac_is_off(workspace: Path) -> None
 def test_describe_states_whether_rbac_is_enforced() -> None:
     assert "rbac:enforced" in _rbac(a=Role.ADMIN).principal("a").describe()
     assert "rbac:not enforced" in RbacPolicy().principal("a").describe()
+
+
+# ------------------------------------------------------------------ ADM-002 ownership
+def test_a_repository_owner_administers_it_without_a_role_binding() -> None:
+    """An unowned-in-practice repository is how nobody can change policy in an incident."""
+    policy = Policy(
+        project=ProjectPolicy(name="aica", owners=["olive"]),
+        rbac=_rbac(olive=Role.DEVELOPER),
+    )
+    olive = policy.principal("olive")
+    assert olive.can(Permission.ADMINISTER)
+    assert olive.can(Permission.WRITE)  # from the role, not from ownership
+
+
+def test_owning_does_not_grant_approval() -> None:
+    """Owning a repository and being entitled to wave through a destructive command differ."""
+    policy = Policy(project=ProjectPolicy(owners=["olive"]), rbac=_rbac(olive=Role.DEVELOPER))
+    assert not policy.principal("olive").can(Permission.APPROVE)
+
+
+def test_a_non_owner_gets_no_extra_permission() -> None:
+    policy = Policy(project=ProjectPolicy(owners=["olive"]), rbac=_rbac(nina=Role.VIEWER))
+    assert policy.principal("nina").permissions == {Permission.READ}
+
+
+def test_owner_names_are_deduplicated_and_must_be_non_empty() -> None:
+    assert ProjectPolicy(owners=["a", "a", "b"]).owners == ["a", "b"]
+    with pytest.raises(ValueError, match="non-empty"):
+        ProjectPolicy(owners=["a", "  "])
+
+
+def test_an_owner_may_administer_the_control_plane(workspace: Path) -> None:
+    policy = Policy(project=ProjectPolicy(owners=["olive"]), rbac=_rbac(olive=Role.DEVELOPER))
+    plane = ControlPlane(workspace, actor="olive", rbac=policy.rbac, project=policy.project)
+    plane.disable(TargetKind.TOOL, "shell.run", "owner says so")
+    assert [e.name for e in plane.load()] == ["shell.run"]
+
+
+# ------------------------------------------------------------------ ADM-008 versioning
+def test_the_policy_checksum_changes_when_the_policy_does() -> None:
+    """A version number is bumped by whoever remembers to; a checksum is not."""
+    base = Policy()
+    assert base.checksum() == Policy().checksum()
+    changed = Policy(project=ProjectPolicy(name="other"))
+    assert changed.checksum() != base.checksum()
+
+
+def test_policy_versions_are_recorded_once_per_distinct_policy(workspace: Path) -> None:
+    plane = ControlPlane(workspace, actor="alice")
+    assert plane.record_policy_version(1, "aaa") is not None
+    assert plane.record_policy_version(1, "aaa") is None  # unchanged: nothing recorded
+    assert plane.record_policy_version(1, "bbb") is not None  # same version, edited anyway
+    names = [r.name for r in plane.policy_versions()]
+    assert names == ["v1+aaa", "v1+bbb"]
+
+
+def test_an_unbumped_policy_edit_is_still_visible(workspace: Path) -> None:
+    """The checksum is what detects the change; the version is what a human cites."""
+    plane = ControlPlane(workspace, actor="alice")
+    plane.record_policy_version(3, "first")
+    record = plane.record_policy_version(3, "second")
+    assert record is not None and "effective policy changed" in record.reason
+
+
+def test_policy_records_do_not_pollute_the_disable_history(workspace: Path) -> None:
+    plane = ControlPlane(workspace, actor="alice")
+    plane.record_policy_version(1, "aaa")
+    plane.disable(TargetKind.TOOL, "shell.run", "incident")
+    assert [r.kind.value for r in plane.history()] == ["policy", "tool"]
+    assert len(plane.policy_versions()) == 1

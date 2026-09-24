@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -98,8 +99,13 @@ def _context(args: argparse.Namespace) -> tuple[ToolContext, RepositoryIndex]:
         session_id=getattr(args, "session", None),
     )
     approver = AllowAllApprover() if getattr(args, "yes", False) else ConsoleApprover()
+    controls = ControlPlane(root, actor=args.actor, rbac=policy.rbac, project=policy.project)
     index = RepositoryIndex(ws)
     _OPEN_INDEXES.append(index)
+    # ADM-008: note the effective policy when it differs from the last one seen. Cheap,
+    # and the only place that reliably observes what was actually in force.
+    with suppress(ControlError, OSError):
+        controls.record_policy_version(policy.version, policy.checksum())
     ctx = ToolContext(
         workspace=ws,
         policy=policy,
@@ -108,8 +114,8 @@ def _context(args: argparse.Namespace) -> tuple[ToolContext, RepositoryIndex]:
         approver=approver,
         session_id=getattr(args, "session", None),
         index=index,
-        controls=ControlPlane(root, actor=args.actor, rbac=policy.rbac),  # SEC-007
-        principal=policy.rbac.principal(args.actor),  # ADM-001
+        controls=controls,  # SEC-007
+        principal=policy.principal(args.actor),  # ADM-001, ADM-002
         audit_directory=root / ".aica" / "audit",  # ADM-005 quota counting
     )
     return ctx, index
@@ -1099,7 +1105,18 @@ def cmd_admin(args: argparse.Namespace) -> int:
 def cmd_policy(args: argparse.Namespace) -> int:
     ctx, _ = _context(args)
     p = ctx.policy
-    print(f"version: {p.version}")
+    print(f"version: {p.version}  checksum: {p.checksum()}")
+    if p.project.name or p.project.owners:
+        print(f"project: {p.project.describe()}")  # ADM-002
+    if args.history:
+        plane = ControlPlane(Path(args.workspace).resolve(), actor=args.actor)
+        versions = plane.policy_versions()
+        print("\npolicy history (ADM-008):")
+        for record in versions or []:
+            print(f"  {record.describe()}")
+        if not versions:
+            print("  (none recorded yet)")
+        return 0
     print(f"environment: {p.autonomy.environment.value}")
     if p.rbac.enabled:
         print(
@@ -1477,6 +1494,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.set_defaults(func=cmd_admin)
 
     sp = sub.add_parser("policy", help="show the effective policy")
+    sp.add_argument("--history", action="store_true", help="policy versions seen (ADM-008)")
     sp.set_defaults(func=cmd_policy)
 
     sp = sub.add_parser("audit", help="search the audit trail (ADM-007)")

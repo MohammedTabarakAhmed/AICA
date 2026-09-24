@@ -39,6 +39,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from aica.admin.rbac import Permission, Principal, RbacPolicy
+from aica.policy.models import ProjectPolicy
 
 CONTROLS_FILE = "controls.json"
 HISTORY_FILE = "history.jsonl"
@@ -54,6 +55,7 @@ class TargetKind(StrEnum):
     TOOL = "tool"  # a tool name or group: "shell.run", "database"
     MODEL = "model"  # a model name from the registry
     INTEGRATION = "integration"  # an MCP server, a database connection, a connector
+    POLICY = "policy"  # ADM-008: the effective policy, identified by version + checksum
 
 
 class Disabled(BaseModel):
@@ -84,7 +86,7 @@ class ChangeRecord(BaseModel):
 
     at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     actor: str = "unknown"
-    action: str  # "disable" | "enable"
+    action: str  # "disable" | "enable" | "policy"
     kind: TargetKind
     name: str
     reason: str = ""
@@ -103,15 +105,17 @@ class ControlPlane:
         root: str | Path,
         actor: str = "unknown",
         rbac: RbacPolicy | None = None,
+        project: ProjectPolicy | None = None,
     ) -> None:
         self.directory = Path(root) / ".aica" / "admin"
         self.actor = actor
         # ADM-001/SEC-006. None = no role policy wired up, which behaves exactly as before.
         self.rbac = rbac or RbacPolicy()
+        self.project = project or ProjectPolicy()  # ADM-002: owners administer
 
     @property
     def principal(self) -> Principal:
-        return self.rbac.principal(self.actor)
+        return self.rbac.principal(self.actor, owner=self.project.is_owner(self.actor))
 
     @property
     def controls_path(self) -> Path:
@@ -225,3 +229,35 @@ class ControlPlane:
 
     def __iter__(self) -> Iterator[Disabled]:
         return iter(self.load())
+
+    # ------------------------------------------------------------------ ADM-008
+    def record_policy_version(self, version: int, checksum: str) -> ChangeRecord | None:
+        """Note the effective policy when it differs from the last one seen.
+
+        Versioning by declaration alone does not work: a version number is bumped by
+        whoever remembers to, so a change that forgot to bump it would be invisible. The
+        checksum is what actually detects a change; the version is what a human cites.
+        Recording both means an unbumped edit still shows up in the history, with the
+        actor who was running when it first took effect.
+
+        Returns the record written, or None when nothing changed.
+        """
+        name = f"v{version}+{checksum}"
+        previous = [r for r in self.history() if r.kind is TargetKind.POLICY]
+        if previous and previous[-1].name == name:
+            return None
+        record = ChangeRecord(
+            actor=self.actor,
+            action="policy",
+            kind=TargetKind.POLICY,
+            name=name,
+            reason="effective policy changed" if previous else "effective policy first seen",
+        )
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with self.history_path.open("a", encoding="utf-8") as fh:
+            fh.write(record.model_dump_json() + "\n")
+        return record
+
+    def policy_versions(self) -> list[ChangeRecord]:
+        """ADM-008: every effective policy this workspace has seen, oldest first."""
+        return [r for r in self.history() if r.kind is TargetKind.POLICY]

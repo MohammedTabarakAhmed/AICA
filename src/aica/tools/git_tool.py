@@ -197,6 +197,7 @@ class GitSwitch(Tool):
 
 
 MAX_UNTRACKED_BYTES = 200_000
+AGENT_STATE_DIR = ".aica"
 
 
 def _untracked_diff(ctx: ToolContext, path: str | None) -> tuple[str, list[str]]:
@@ -218,6 +219,11 @@ def _untracked_diff(ctx: ToolContext, path: str | None) -> tuple[str, list[str]]
     blocks: list[str] = []
     included: list[str] = []
     for relative in sorted(ctx.git.status().untracked):
+        # The agent's own state directory is never part of the user's change. It is
+        # git-ignored in a configured repository, but a workspace without a .gitignore
+        # would otherwise offer the audit log and the control plane up for review.
+        if relative == AGENT_STATE_DIR or relative.startswith(AGENT_STATE_DIR + "/"):
+            continue
         if prefix and not (relative == prefix or relative.startswith(prefix + "/")):
             continue
         try:

@@ -112,3 +112,15 @@ enabled = false
 # name = "core"
 # members = ["alice", "bob"]
 # max_model_calls = 1000
+
+[project]
+# ADM-002. Repositories have owners, policies and approved tools; the policies and the
+# approved tools are the rest of this file, and this is the owner. An owner holds the
+# `administer` permission for this project without a separate role binding - an
+# unowned-in-practice repository is how a policy file ends up with nobody able to change
+# it during an incident. Owning does NOT grant `approve`: owning a repository and being
+# entitled to wave through a destructive command are different things.
+name = "Enhanced AI Coding Agent"
+description = "Enterprise AI coding assistant agent (BRD v3)"
+repository = ""
+owners = []

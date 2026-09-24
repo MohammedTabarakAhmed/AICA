@@ -96,7 +96,7 @@ class ToolContext:
         """The acting principal. Falls back to the audit log's actor name (ADM-001)."""
         if self.principal is not None:
             return self.principal
-        return self.policy.rbac.principal(self.audit.actor)
+        return self.policy.principal(self.audit.actor)
 
     def require_permission(self, permission: Permission, action: str) -> None:
         self.actor.require(permission, action)
