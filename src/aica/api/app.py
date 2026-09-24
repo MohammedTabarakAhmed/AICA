@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from aica.agent.loop import STATE_KEY, AgentLoop, AgentState
 from aica.api.tasks import TaskManager, event_payload
 from aica.approvals import AllowAllApprover, ApprovalRequired, Approver, DenyAllApprover
-from aica.audit import AuditLog, JsonlAuditSink
+from aica.audit import AuditLog, EventCategory, JsonlAuditSink, Outcome
 from aica.chat.assistant import CodingAssistant
 from aica.chat.session import Session, SessionStore
 from aica.models.base import ModelError, ModelInfo
@@ -44,6 +44,7 @@ from aica.models.routing import ModelRouter, Selection, TaskKind
 from aica.policy import Policy, load_policy
 from aica.policy.budget import RunBudget
 from aica.rag.index import RepositoryIndex
+from aica.review.reviewer import DEFAULT_CHECKS, CodeReviewer, ReviewCheck, ReviewRequest
 from aica.tools import ToolContext, default_registry
 from aica.tools.base import ToolArgumentError, ToolError, ToolNotAllowed
 from aica.workspace import GitGuard, WorkspaceGuard
@@ -119,6 +120,22 @@ class ToolCallRequest(BaseModel):
     tool: str = Field(min_length=1, max_length=100)
     arguments: dict[str, Any] = Field(default_factory=dict)
     auto_approve: bool = False
+
+
+class ReviewRequestBody(BaseModel):
+    """API-016 (BRD section 11): review a change. Read-only - nothing is written."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    diff: str = Field(default="", max_length=400_000)
+    base: str | None = Field(default=None, max_length=200)
+    staged: bool = False
+    path: str | None = Field(default=None, max_length=1000)
+    checks: list[str] | None = None
+    include_untracked: bool = True  # new files are invisible to `git diff` until staged
+    focus: str = Field(default="", max_length=2000)
+    summarize: bool = True
+    model: str | None = None
 
 
 class ApprovalDecision(BaseModel):
@@ -547,6 +564,74 @@ def create_app(settings: ApiSettings) -> FastAPI:
         """API-010: status/branch/diff/commit/PR preparation."""
         _require_prefix(request.tool, "git.")
         return call_tool(request)
+
+    @app.post("/review", dependencies=guard)
+    def review_change(request: ReviewRequestBody) -> dict[str, Any]:
+        """REV-001..007: review a diff, or the working tree when no diff is supplied.
+
+        Read-only. The response carries the grouped findings and, importantly, ``complete``:
+        a client must not treat an empty ``findings`` list from an incomplete review as
+        approval, and the payload says which checks failed so it does not have to guess.
+        """
+        ctx, index = build_context()
+        try:
+            diff = request.diff
+            if not diff.strip():
+                arguments: dict[str, Any] = {}
+                if request.staged:
+                    arguments["staged"] = True
+                if request.base:
+                    arguments["base"] = request.base
+                if request.path:
+                    arguments["path"] = request.path
+                arguments["include_untracked"] = request.include_untracked
+                diff = default_registry().call("git.diff", arguments, ctx).output
+            try:
+                checks = (
+                    tuple(ReviewCheck(name) for name in request.checks)
+                    if request.checks
+                    else DEFAULT_CHECKS
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+            try:
+                selection = select_model(request.model, TaskKind.REVIEW, audit=ctx.audit)
+                adapter = selection.adapter
+                chosen = selection.describe()
+            except (ModelError, PermissionError) as exc:
+                adapter, chosen = None, f"unavailable: {exc}"
+
+            reviewer = CodeReviewer(
+                adapter,
+                root=ctx.workspace.root,
+                conventions=project_conventions_block(
+                    ctx.workspace.root, ProjectContextStore(ctx.workspace.root).load()
+                ),
+            )
+            report = reviewer.review(
+                ReviewRequest(
+                    diff=diff,
+                    checks=checks,
+                    focus=request.focus,
+                    summarize=request.summarize,
+                )
+            )
+            ctx.audit.record(
+                category=EventCategory.TASK,
+                action="review.completed",
+                outcome=Outcome.SUCCESS if report.complete else Outcome.FAILURE,
+                model=report.model,
+                details={
+                    "files": len(report.files_reviewed),
+                    "findings": len(report.findings),
+                    "counts": report.counts(),
+                    "complete": report.complete,
+                },
+            )
+            return {**report.to_dict(), "model_selection": chosen}
+        finally:
+            index.close()
 
     @app.post("/tools/{tool_name}", dependencies=guard)
     def call_any_tool(tool_name: str, request: ToolCallRequest) -> dict[str, Any]:
