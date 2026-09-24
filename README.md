@@ -44,6 +44,8 @@ aica conventions --record "..."     REM record a project convention (persists in
 aica debug --log build.log          REM diagnose a failure from a log or stack trace
 aica commit-message                 REM a validated commit message for the current diff
 aica gen-tests --file src/x.py      REM propose tests for a file (nothing is written)
+aica review                         REM review the current change; exits 2 on findings, 6 if incomplete
+aica review --base main --json      REM review the branch against main, machine-readable
 aica task "add input validation"    REM run an agent task: plan, execute, verify, report
 aica browse --url http://127.0.0.1:3000  REM drive a real browser, collect evidence
 aica db schema --table orders       REM inspect an approved database (read-only)
@@ -59,6 +61,12 @@ aica audit                          REM recent material actions
 additionally need a reachable model: set the credential
 environment variable named in `config/models.toml` and add the endpoint host to
 `[network].allowed_hosts` in `config/policy.toml`.
+
+`aica review` runs without a model too: the test-adequacy and security checks are
+deterministic. It then reports `model: none`, marks the model-dependent checks as not run,
+and exits **6** — an incomplete review is never reported as a pass. Exit codes: `0` clean,
+`2` a finding at or above `--fail-on` (default `high`), `6` the review could not be
+completed. New, untracked files are included by default; nothing is ever written or staged.
 
 ## Local development (Windows / CMD or PowerShell)
 
