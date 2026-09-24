@@ -32,6 +32,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from aica.admin.controls import ControlError, ControlPlane, TargetKind
 from aica.agent.loop import STATE_KEY, AgentLoop, AgentState
 from aica.api.tasks import TaskManager, event_payload
 from aica.approvals import AllowAllApprover, ApprovalRequired, Approver, DenyAllApprover
@@ -138,6 +139,17 @@ class ReviewRequestBody(BaseModel):
     model: str | None = None
 
 
+class ControlRequest(BaseModel):
+    """SEC-007: switch a tool, model or integration off (or back on) immediately."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(pattern="^(tool|model|integration)$")
+    name: str = Field(min_length=1, max_length=200)
+    disabled: bool = True
+    reason: str = Field(default="", max_length=1000)
+
+
 class ApprovalDecision(BaseModel):
     """API: approve or reject a pending sensitive action (BRD section 15 'Approval')."""
 
@@ -206,6 +218,7 @@ def create_app(settings: ApiSettings) -> FastAPI:
             session_id=session_id,
             index=index,
             databases_file=settings.databases_file,
+            controls=ControlPlane(root, actor=settings.actor),  # SEC-007
         )
         return ctx, index
 
@@ -214,7 +227,11 @@ def create_app(settings: ApiSettings) -> FastAPI:
 
     def gateway_for() -> ModelGateway:
         policy = load_policy(settings.policy_file)
-        return ModelGateway.from_file(policy.network, settings.models_file)
+        return ModelGateway.from_file(
+            policy.network,
+            settings.models_file,
+            controls=ControlPlane(settings.workspace.resolve(), actor=settings.actor),
+        )
 
     def select_model(
         model: str | None,
@@ -683,6 +700,49 @@ def create_app(settings: ApiSettings) -> FastAPI:
         finally:
             index.close()
         return {"decision_id": decision_id, "approved": decision.approved, "recorded": True}
+
+    # ------------------------------------------------------------------ administration
+    @app.get("/admin/controls", dependencies=guard)
+    def list_controls() -> dict[str, Any]:
+        """SEC-007: what is currently switched off."""
+        plane = ControlPlane(settings.workspace.resolve(), actor=settings.actor)
+        try:
+            return {
+                "disabled": [json.loads(e.model_dump_json()) for e in plane.load()],
+            }
+        except ControlError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/admin/controls", dependencies=guard)
+    def set_control(request: ControlRequest) -> dict[str, Any]:
+        """SEC-007 / ADM-003 / ADM-004: disable or re-enable, in effect on the next call."""
+        plane = ControlPlane(settings.workspace.resolve(), actor=settings.actor)
+        try:
+            kind = TargetKind(request.kind)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            if request.disabled:
+                entry = plane.disable(kind, request.name, request.reason)
+                changed, description = True, entry.describe()
+            else:
+                changed = plane.enable(kind, request.name, request.reason)
+                description = f"{kind.value} {request.name!r} " + (
+                    "re-enabled" if changed else "was not disabled"
+                )
+        except ControlError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"changed": changed, "detail": description}
+
+    @app.get("/admin/history", dependencies=guard)
+    def admin_history(limit: int = 50) -> dict[str, Any]:
+        """ADM-010: administrative changes, attributable and reviewable."""
+        plane = ControlPlane(settings.workspace.resolve(), actor=settings.actor)
+        return {
+            "changes": [
+                json.loads(r.model_dump_json()) for r in plane.history(max(1, min(limit, 1000)))
+            ]
+        }
 
     # ------------------------------------------------------------------ audit
     @app.get("/audit", dependencies=guard)

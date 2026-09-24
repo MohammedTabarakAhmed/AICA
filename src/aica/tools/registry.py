@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from aica.admin.controls import TargetKind
 from aica.tools.base import Tool, ToolContext, ToolNotAllowed, ToolResult
 
 
@@ -35,6 +36,13 @@ class ToolRegistry:
         never depends on also remembering to remove it from an allowlist somewhere.
         """
         group = self._groups[name]
+        # SEC-007 first: an operator switching something off during an incident must not
+        # be overridden by anything, and must not have to wait for a restart. The control
+        # plane is read here, on the call, rather than from a policy loaded at startup.
+        if ctx.controls is not None:
+            disabled = ctx.controls.is_disabled(TargetKind.TOOL, name, group)
+            if disabled is not None:
+                return disabled.describe()
         if group not in ctx.policy.autonomy.allowed_tools:
             return f"group {group!r} is not in autonomy.allowed_tools"
         return ctx.policy.tools.denial_reason(name, group, ctx.environment)

@@ -209,14 +209,14 @@ requirements are not lost. The BRD section is cited on each line.
 - [ ] INT-006 repository-provider integration
 - [ ] ADM-001 RBAC
 - [ ] ADM-002 project/repository administration
-- [ ] ADM-003 model administration
-- [ ] ADM-004 tool administration
+- [x] ADM-003 model administration (approval status, exact version pinning and retirement already live in the model registry `config/models.toml` (MM-001/MM-013); the **immediate** half is the control plane: `aica admin disable model <name>` stops it being served on the next call. The check runs *before* the adapter cache on purpose - a model already built for a long-running server must stop being served at once, or "immediately" means "after the next restart")
+- [x] ADM-004 tool administration (policy approves tools (SEC-002); `aica admin disable tool <name|group>` withdraws one now, enforced in `ToolRegistry` on every call, covering a whole group so an operator does not have to enumerate five database tools mid-incident. Disabled tools also disappear from the advertised tool list)
 - [ ] ADM-005 quotas
 - [ ] ADM-006 usage reporting
 - [ ] ADM-007 audit search
 - [ ] ADM-008 policy management/versioning
 - [ ] ADM-009 retention management
-- [ ] ADM-010 configuration history
+- [x] ADM-010 configuration history (every administrative change is appended to `.aica/admin/history.jsonl` with actor, timestamp, target and reason, and is never rewritten - so "why is this off?" is answerable months later, and so is "who turned it back on". `aica admin history`, `GET /admin/history`. A damaged line is skipped rather than hiding the rest of the record)
 - [x] REV-001 diff review (`src/aica/review/`: the diff is parsed into files and post-image line numbers first, then reviewed by four checks; `aica review`, `POST /review`. New, untracked files are included by default - `git diff` cannot see them, and a new module is what an agent most often produces - by synthesising an all-added diff from the file rather than staging it, so a read-only question leaves the index untouched (GIT-010))
 - [x] REV-002 bug/edge-case review (the correctness check prompts for the defect classes worth naming: boundary and off-by-one errors, unreleased resources, errors swallowed or reported as success, state mutated while iterated, a contract whose callers were not updated)
 - [x] REV-003 convention review (the conventions detected for CC-004/MEM-004 are supplied to a check of their own, instructed to report a real departure and not anything a formatter or linter would fix)
@@ -237,7 +237,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [ ] API-015 audit retrieval (BRD §15)
 - [ ] SEC-005 configurable retention/deletion of sessions, source-derived context, trajectories (BRD §16)
 - [ ] SEC-006 administrative separation of duties for model/tool approval (BRD §16)
-- [ ] SEC-007 immediate disable of a model, tool or integration (BRD §16)
+- [x] SEC-007 immediate disable of a model, tool or integration (BRD §16) (`ControlPlane`: a small file the enforcement points re-read **per call**, so a disable takes effect on the next call with no policy edit, no reload and no restart - the policy file is the right instrument for a standing rule and the wrong one for an incident. It only ever subtracts: "enable" undoes a disable made here and can never grant what policy withholds, so the control plane is not a way around the policy file. Writes are atomic, and a corrupt control file **raises** rather than being read as "nothing is disabled", because the failure mode of guessing is that something switched off during an incident quietly comes back. `aica admin`, `GET|POST /admin/controls`)
 - [ ] NFR-003 concurrency-aware behavior for multi-user/multi-repository sessions (BRD §8)
 - [ ] NFR-004 material actions attributable to user/session/agent/tool (BRD §17 Auditability)
 

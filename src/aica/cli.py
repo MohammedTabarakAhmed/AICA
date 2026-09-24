@@ -22,6 +22,7 @@ Commands:
   aica git status|diff|branches      Git inspection (GIT-002/005)
   aica models                        list approved models (MM-001/013)
   aica sessions [--resume ID]        session history (MEM-001/003)
+  aica admin disable|enable|status   switch a tool/model/integration off now (SEC-007)
   aica policy                        show the effective policy
   aica audit [--limit N]             recent audit events (EXEC-007/MCP-006)
 """
@@ -34,6 +35,7 @@ import sys
 from pathlib import Path
 
 from aica import __version__
+from aica.admin.controls import ControlError, ControlPlane, TargetKind
 from aica.agent.events import AgentEvent, CallbackSink, EventType
 from aica.agent.loop import STATE_KEY, AgentLoop, AgentState
 from aica.agent.plan import PlanError
@@ -92,6 +94,7 @@ def _context(args: argparse.Namespace) -> tuple[ToolContext, RepositoryIndex]:
         approver=approver,
         session_id=getattr(args, "session", None),
         index=index,
+        controls=ControlPlane(root, actor=args.actor),  # SEC-007
     )
     return ctx, index
 
@@ -1035,6 +1038,48 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_admin(args: argparse.Namespace) -> int:
+    """SEC-007 / ADM-003 / ADM-004 / ADM-010: switch things off now, and see who did.
+
+    A disable takes effect on the next call - no restart, no policy edit - because the
+    enforcement points read this state per call rather than at startup.
+    """
+    root = Path(args.workspace).resolve()
+    plane = ControlPlane(root, actor=args.actor)
+    try:
+        if args.admin_command == "status":
+            disabled = plane.load()
+            if not disabled:
+                print("nothing is disabled")
+            for entry in disabled:
+                print(entry.describe())
+            return 0
+        if args.admin_command == "history":
+            records = plane.history(args.limit)
+            if not records:
+                print("no administrative changes recorded")
+            for record in records:
+                print(record.describe())
+            return 0
+        kind = TargetKind(args.kind)
+        reason = " ".join(args.reason or [])
+        if args.admin_command == "disable":
+            entry = plane.disable(kind, args.name, reason)
+            print(entry.describe())
+            print("in effect from the next call; no restart needed", file=sys.stderr)
+            return 0
+        if args.admin_command == "enable":
+            if plane.enable(kind, args.name, reason):
+                print(f"{kind.value} {args.name!r} re-enabled")
+                return 0
+            print(f"{kind.value} {args.name!r} was not disabled", file=sys.stderr)
+            return 1
+    except ControlError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    return 2
+
+
 def cmd_policy(args: argparse.Namespace) -> int:
     ctx, _ = _context(args)
     p = ctx.policy
@@ -1319,6 +1364,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("sessions", help="list or show sessions")
     sp.add_argument("--show", help="session id to display")
     sp.set_defaults(func=cmd_sessions)
+
+    sp = sub.add_parser("admin", help="administrative controls (SEC-007, ADM-003/004/010)")
+    admin_sub = sp.add_subparsers(dest="admin_command", required=True)
+    for verb, helptext in (
+        ("disable", "switch a tool, model or integration off immediately"),
+        ("enable", "undo a disable made here (never grants what policy withholds)"),
+    ):
+        ap = admin_sub.add_parser(verb, help=helptext)
+        ap.add_argument("kind", choices=[k.value for k in TargetKind])
+        ap.add_argument("name", help="tool name or group, model name, or integration name")
+        ap.add_argument("--reason", action="append", help="why; recorded in the history")
+        ap.set_defaults(func=cmd_admin)
+    ap = admin_sub.add_parser("status", help="what is currently disabled")
+    ap.set_defaults(func=cmd_admin)
+    ap = admin_sub.add_parser("history", help="administrative changes, attributable (ADM-010)")
+    ap.add_argument("--limit", type=int, default=50)
+    ap.set_defaults(func=cmd_admin)
 
     sp = sub.add_parser("policy", help="show the effective policy")
     sp.set_defaults(func=cmd_policy)
