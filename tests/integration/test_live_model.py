@@ -10,6 +10,11 @@ stays runnable offline and in CI:
     set DEEPSEEK_API_KEY=...            (or the variable named in config/models.toml)
     set AICA_TEST_LIVE_MODEL=1          (an explicit opt-in: these calls cost money)
 
+To verify a model other than the default, name it and the variable holding its key:
+
+    set AICA_TEST_LIVE_MODEL_NAME=glm-4.7-flash
+    set AICA_TEST_LIVE_MODEL_KEY_ENV=GLM_API_KEY
+
 The opt-in is separate from the key on purpose: a key may be present in the environment for
 other reasons, and a test run should never spend someone's credit by accident. Prompts are
 tiny and `max_tokens` is capped, so a full run costs a fraction of a cent.
@@ -31,6 +36,7 @@ pytestmark = pytest.mark.integration
 
 LIVE = os.environ.get("AICA_TEST_LIVE_MODEL") == "1"
 KEY_ENV = os.environ.get("AICA_TEST_LIVE_MODEL_KEY_ENV", "DEEPSEEK_API_KEY")
+MODEL = os.environ.get("AICA_TEST_LIVE_MODEL_NAME") or None  # None: the configured default
 MODELS_FILE = "config/models.toml"
 POLICY_FILE = "config/policy.toml"
 
@@ -45,7 +51,7 @@ if not LIVE or not os.environ.get(KEY_ENV):  # pragma: no cover - the skip is no
 def adapter():  # type: ignore[no-untyped-def]
     policy = load_policy(POLICY_FILE)
     gateway = ModelGateway.from_file(policy.network, MODELS_FILE)
-    return gateway.get(None)
+    return gateway.get(MODEL)
 
 
 # ---------------------------------------------------------------- MM-003/012
@@ -114,7 +120,7 @@ def test_the_planner_produces_a_usable_plan_from_a_real_model(tmp_path: Path) ->
         approver=DenyAllApprover(),
     )
     gateway = ModelGateway.from_file(load_policy(POLICY_FILE).network, MODELS_FILE)
-    plan = Planner(gateway.get(None), default_registry()).create(
+    plan = Planner(gateway.get(MODEL), default_registry()).create(
         "read src/calc.py and report whether divide guards against a zero divisor", ctx
     )
     assert plan.steps, "a real model must produce at least one step"

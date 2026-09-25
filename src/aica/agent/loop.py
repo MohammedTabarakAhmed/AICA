@@ -36,12 +36,15 @@ from aica.audit import EventCategory, Outcome
 from aica.chat.report import FileChange, TaskReport
 from aica.models.base import ChatMessage, ModelAdapter, ModelError
 from aica.policy.budget import BudgetExceeded, Cancelled, RunBudget
+from aica.safety.injection import wrap_untrusted
 from aica.safety.redaction import redact
 from aica.testing.results import CheckStatus, VerificationLedger, parse_output
 from aica.tools.base import ToolContext, ToolError, ToolNotAllowed
 from aica.tools.registry import ToolRegistry
 
 MAX_RESULT_CHARS = 4000
+# How much of the earlier results an adaptation prompt may carry (see ``_observations``).
+MAX_OBSERVATION_CHARS = 12000
 STATE_KEY = "agent"
 
 # Tools whose success means a file changed - collected for the report (UX-004, AG-010).
@@ -463,6 +466,7 @@ class AgentLoop:
                 role="user",
                 content=(
                     f"Task: {state.task}\n\nPlan so far:\n{history}\n\n"
+                    f"{self._observations(state)}"
                     f"Failed step: {failed.id} ({failed.tool}) attempt {failed.attempts}\n"
                     f"Arguments: {json.dumps(failed.arguments)[:2000]}\n"
                     f"Error: {failed.error}\n\nWhat next?"
@@ -478,6 +482,33 @@ class AgentLoop:
             raise TaskAborted(f"could not adapt after {failed.id} failed: {exc}") from exc
 
         self._apply_adaptation(state, failed, adaptation)
+
+    @staticmethod
+    def _observations(state: AgentState) -> str:
+        """AG-004: what the completed steps returned, so a repair can use what was learned.
+
+        Without this, the model repairing a failed edit is told only that a step "read the
+        file", never what the file says, and can do nothing but read it again. Results are
+        repository content and tool output, so they are fenced as untrusted (SAFE-007).
+        """
+        blocks: list[str] = []
+        seen: set[str] = set()
+        used = 0
+        for step in reversed(state.plan.steps):  # newest first: the likeliest to matter
+            if step.status is not StepStatus.SUCCEEDED or not step.result:
+                continue
+            key = f"{step.tool}:{json.dumps(step.arguments, sort_keys=True)}"
+            if key in seen:  # the same read twice says nothing new
+                continue
+            seen.add(key)
+            if used + len(step.result) > MAX_OBSERVATION_CHARS:
+                break
+            used += len(step.result)
+            label = f"{step.id} {step.tool} {json.dumps(step.arguments)[:200]}"
+            blocks.append(wrap_untrusted(step.result, label))
+        if not blocks:
+            return ""
+        return "Results of completed steps (newest first):\n" + "\n".join(blocks) + "\n\n"
 
     def _apply_adaptation(
         self, state: AgentState, failed: PlanStep, adaptation: Adaptation

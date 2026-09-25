@@ -44,6 +44,9 @@ Rules:
 - Use only the tools listed for you, spelled exactly. Never invent a tool or an argument.
 - Every step must be a single concrete tool call. If a step needs a value you do not have
   yet (a file's contents, a search result), make reading it an earlier step.
+- You have not seen any file's contents yet, so never guess text an edit must match. When
+  a change depends on what a file says, plan the read and then the edit as your best
+  attempt; if the edit does not match, you will be shown what the read returned to repair it.
 - Order matters: inspect before you change, change before you verify.
 - "verification" lists the check kinds that must pass before this task may be called done.
   Include "unit" whenever you change code.
@@ -65,7 +68,10 @@ Return ONLY a JSON object, no prose and no markdown fences:
 - "skip": the step was unnecessary; continue with the rest of the plan.
 - "abort": the task cannot be completed; explain why in "reason".
 - "steps" is required for "replace" and ignored otherwise.
-- Never repeat a step that has already failed the same way twice; change the approach."""
+- Never repeat a step that has already failed the same way twice; change the approach.
+- The results of completed steps are shown to you. Use them: an argument that must match
+  existing text (such as an edit's old text) is copied exactly from a result, never guessed.
+  Do not read again what a result already shows."""
 
 
 class PlanError(ValueError):
