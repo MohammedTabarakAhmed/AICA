@@ -26,12 +26,14 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from aica.agent.events import AgentEvent, EventSink, EventType
 from aica.agent.loop import AgentLoop, AgentState
 from aica.chat.report import TaskReport
 from aica.policy.budget import CancellationToken, RunBudget
+from aica.review.acceptance import fingerprint
 from aica.tools.base import ToolContext
 
 MAX_EVENTS_PER_TASK = 5000
@@ -65,6 +67,11 @@ class TaskRecord:
     token: CancellationToken = field(default_factory=CancellationToken)
     pause_requested: bool = False
     cleanup_error: str | None = None
+    # CC-005. What each changed file looked like when the run ended, so a later reject or
+    # partial accept can refuse to touch a file someone has edited since.
+    final_fingerprints: dict[str, str] = field(default_factory=dict)
+    # CC-005. path -> "accepted" | "rejected" | "partial"; a decision is final.
+    decisions: dict[str, str] = field(default_factory=dict)
     _done: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -192,6 +199,7 @@ class TaskManager:
                 )
                 record.report = report
                 record.agent_state = loop.state
+                record.final_fingerprints = _fingerprints(ctx.workspace.root, report)
                 if record.pause_requested:
                     record.state = TaskState.PAUSED
                 elif report.cancelled:
@@ -293,6 +301,20 @@ class TaskManager:
                 record.token.cancel("server shutting down")
         for record in list(self._tasks.values()):
             record.wait(timeout=timeout)
+
+
+def _fingerprints(root: Path, report: TaskReport) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for change in report.changes:
+        target = root / change.path
+        try:
+            text: str | None = target.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            text = None
+        except (OSError, UnicodeDecodeError):
+            continue  # not decidable here; the change stays visible, just not actionable
+        out[change.path] = fingerprint(text)
+    return out
 
 
 def _fan_in(existing: EventSink, recorder: _RecordingSink) -> EventSink:

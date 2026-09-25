@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AICA</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <!-- INT-003. Every value shown here comes from the HTTP API and is inserted as text,
+       never as markup: repository content and model output are untrusted (SAFE-007). -->
+  <header class="topbar">
+    <div class="brand">AICA</div>
+    <div id="workspace" class="muted"></div>
+    <div class="spacer"></div>
+    <span id="lease" class="badge" hidden></span>
+    <button id="approvals-badge" class="badge badge-alert" hidden></button>
+    <button id="logout" class="link" hidden>Sign out</button>
+  </header>
+
+  <section id="login" class="login" hidden>
+    <form id="login-form" class="card">
+      <h1>Connect to AICA</h1>
+      <p class="muted">Paste the API token printed by <code>aica serve</code>. It is kept for
+        this browser tab only.</p>
+      <label for="token">API token</label>
+      <input id="token" type="password" autocomplete="off" required>
+      <p id="login-error" class="error" role="alert"></p>
+      <button type="submit" class="primary">Connect</button>
+    </form>
+  </section>
+
+  <div id="app" class="layout" hidden>
+    <nav class="sidebar">
+      <div class="sidebar-head">
+        <h2>Sessions</h2>
+        <button id="new-session" class="small">New</button>
+      </div>
+      <ul id="sessions" class="list"></ul>
+      <div class="sidebar-nav">
+        <button data-view="task" class="nav active">Tasks</button>
+        <button data-view="approvals" class="nav">Approvals <span id="approvals-count"></span></button>
+        <button data-view="models" class="nav">Models</button>
+      </div>
+    </nav>
+
+    <main>
+      <!-- Approval requests are shown above every view when any are waiting (UX-008). -->
+      <div id="approvals-banner" class="banner" role="alert" hidden></div>
+
+      <section id="view-task" class="view">
+        <div id="no-session" class="empty">Select or create a session to run a task.</div>
+        <div id="session-pane" hidden>
+          <form id="task-form" class="card">
+            <label for="task-text">Task</label>
+            <textarea id="task-text" rows="3" required placeholder="Describe what the agent should do"></textarea>
+            <div class="row">
+              <label>Model
+                <select id="task-model"><option value="">Routed automatically</option></select>
+              </label>
+              <label>Kind of work
+                <select id="task-kind">
+                  <option value="planning">planning</option>
+                  <option value="coding">coding</option>
+                  <option value="testing">testing</option>
+                  <option value="review">review</option>
+                </select>
+              </label>
+              <label>Max steps <input id="task-steps" type="number" min="1" max="1000" placeholder="policy"></label>
+              <div class="spacer"></div>
+              <button type="submit" class="primary">Run task</button>
+            </div>
+            <p id="task-error" class="error" role="alert"></p>
+          </form>
+
+          <div class="columns">
+            <div class="card tasks-card">
+              <h3>Tasks in this session</h3>
+              <ul id="tasks" class="list"></ul>
+            </div>
+            <div id="task-detail" class="card detail" hidden>
+              <div class="row">
+                <h3 id="task-title"></h3>
+                <div class="spacer"></div>
+                <span id="task-state" class="state"></span>
+              </div>
+              <div class="row controls">
+                <button id="btn-pause" class="small">Pause</button>
+                <button id="btn-resume" class="small">Resume</button>
+                <button id="btn-cancel" class="small danger">Cancel</button>
+              </div>
+              <h4>Plan</h4>
+              <pre id="task-plan" class="plan"></pre>
+              <h4>Progress</h4>
+              <ol id="task-events" class="events"></ol>
+              <div id="task-report" hidden>
+                <h4>Result</h4>
+                <div id="report-outcome" class="outcome"></div>
+                <pre id="report-verification" class="verification"></pre>
+                <ul id="report-warnings" class="warnings"></ul>
+              </div>
+              <div id="task-changes" hidden>
+                <h4>Changes</h4>
+                <p class="muted">Keep all of a file's changes, none of them, or only the
+                  hunks you tick. Decisions are final and recorded in the audit trail.</p>
+                <div id="changes"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-approvals" class="view" hidden>
+        <div class="card">
+          <h3>Approval requests</h3>
+          <p class="muted">Deciding a request never runs anything: the action is re-sent by
+            whoever asked, and passes every check again.</p>
+          <ul id="approvals" class="list approvals"></ul>
+        </div>
+      </section>
+
+      <section id="view-models" class="view" hidden>
+        <div class="card">
+          <h3>Models</h3>
+          <table class="table">
+            <thead><tr><th>Name</th><th>Family</th><th>Version</th><th>Context</th><th>Capabilities</th><th>Status</th></tr></thead>
+            <tbody id="models"></tbody>
+          </table>
+          <h4>Routing</h4>
+          <table class="table">
+            <thead><tr><th>Kind of work</th><th>Model</th><th>Fallbacks</th></tr></thead>
+            <tbody id="routing"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

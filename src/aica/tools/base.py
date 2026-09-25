@@ -10,15 +10,22 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from aica.admin.controls import ControlPlane
+from aica.admin.quotas import QuotaExceeded
+from aica.admin.quotas import check as quota_check
+from aica.admin.rbac import Permission, Principal
+from aica.admin.reporting import iter_events
 from aica.approvals import ApprovalRequest, ApprovalRequired, Approver, DenyAllApprover
 from aica.audit import AuditLog, EventCategory, InMemoryAuditSink, Outcome
 from aica.policy import CancellationToken, Policy
 from aica.policy.models import ActionCategory, Environment
 from aica.workspace import GitGuard, WorkspaceGuard
+from aica.workspace.lease import RepositoryBusy, RepositoryLease
 
 if TYPE_CHECKING:
     from aica.rag.index import RepositoryIndex
@@ -50,6 +57,21 @@ class ToolContext:
     # (tests, or a project with several configurations). Never a DSN: a connection is always
     # selected by name from a configuration file (DB-001).
     databases_file: str | None = None
+    # SEC-007. The control plane is re-read on every tool call rather than folded into
+    # the loaded policy, so a disable takes effect on the next call with no restart.
+    # None means no control plane is wired up for this context (tests, library use).
+    controls: ControlPlane | None = None
+    # ADM-001. Who is acting. None means identity is not wired up for this context, which
+    # is the single-developer case; with RBAC disabled in policy a principal holds every
+    # permission anyway, so adding identity never changes existing behaviour by itself.
+    principal: Principal | None = None
+    # ADM-005. Where the audit records this quota counts from live. None disables quota
+    # enforcement for this context, which is the in-memory/test case.
+    audit_directory: Path | None = None
+    # NFR-003. The repository lease this context's run holds, if any. A mutating call is
+    # refused while another holder leases the repository, so an edit from outside a
+    # running agent task cannot land in the middle of it.
+    lease_holder: str | None = None
 
     @classmethod
     def for_workspace(
@@ -73,6 +95,39 @@ class ToolContext:
     @property
     def environment(self) -> Environment:
         return self.policy.autonomy.environment
+
+    @property
+    def actor(self) -> Principal:
+        """The acting principal. Falls back to the audit log's actor name (ADM-001)."""
+        if self.principal is not None:
+            return self.principal
+        return self.policy.principal(self.audit.actor)
+
+    def require_permission(self, permission: Permission, action: str) -> None:
+        self.actor.require(permission, action)
+
+    def check_quota(self, tool: str) -> None:
+        """ADM-005: refuse when the acting principal has exhausted an applicable limit.
+
+        Counted from the audit log, the same stream ADM-006 reports from, so the number
+        that stops someone working is the number an administrator is shown. Exhaustion
+        refuses rather than queueing or throttling: a quota that silently slows work is
+        indistinguishable from a broken system.
+        """
+        policy = self.policy.quotas
+        if not policy.enabled or self.audit_directory is None:
+            return
+        verdict = quota_check(policy, self.actor.name, iter_events(self.audit_directory))
+        if verdict.allowed:
+            return
+        self.audit.record(
+            category=EventCategory.POLICY_DECISION,
+            action=f"{tool}: {verdict.measure} quota exhausted",
+            outcome=Outcome.BLOCKED,
+            tool=tool,
+            details={"used": verdict.used, "cap": verdict.cap, "rule": "ADM-005"},
+        )
+        raise QuotaExceeded(f"{tool}: {verdict.reason()}")
 
     def require_approval(
         self, tool: str, action: str, categories: list[ActionCategory], **details: object
@@ -101,6 +156,10 @@ class ToolContext:
         request = ApprovalRequest(
             action=action, categories=tuple(needed), tool=tool, details=dict(details)
         )
+        # ADM-001: approving is a role, not a capability everyone running the agent has.
+        # Checked before the approver is consulted, so a principal who cannot approve is
+        # refused rather than being asked a question their answer would not count for.
+        self.actor.require(Permission.APPROVE, f"approve {action!r}")
         approved = self.approver.approve(request)
         self.audit.record(
             category=EventCategory.APPROVAL,
@@ -127,6 +186,12 @@ class Tool:
     name: ClassVar[str]
     description: ClassVar[str]
     Args: ClassVar[type[BaseModel]]
+    # SEC-001: does running this tool change anything outside the agent's own memory?
+    # Declared per tool because only the tool knows; ``invoke`` uses it to put every
+    # mutating call behind the production approval gate, rather than relying on each
+    # tool to remember. A tool that writes and leaves this False is the bug this
+    # attribute exists to make visible.
+    mutating: ClassVar[bool] = False
 
     def run(self, args: BaseModel, ctx: ToolContext) -> ToolResult:
         raise NotImplementedError
@@ -151,6 +216,30 @@ class Tool:
         """Validate → policy → run → audit. The only entry point callers should use."""
         ctx.cancel.raise_if_cancelled()
         args = self.parse_args(raw)
+        # SEC-001. A tool that changes something is gated in production even when nothing
+        # about this particular call is otherwise sensitive: writing an ordinary file is
+        # unremarkable in development and is exactly what an environment classification
+        # exists to stop happening unattended against a live system. Tools that already
+        # categorise the call add their own categories on top.
+        if self.mutating and ctx.environment is Environment.PRODUCTION:
+            ctx.require_approval(
+                self.name,
+                f"{self.name} in the production environment",
+                [ActionCategory.PRODUCTION],
+            )
+        if self.mutating:
+            try:
+                RepositoryLease(ctx.workspace.root).check(ctx.lease_holder)
+            except RepositoryBusy as exc:
+                ctx.audit.record(
+                    category=EventCategory.POLICY_DECISION,
+                    action=f"{self.name}: repository leased by another task",
+                    outcome=Outcome.BLOCKED,
+                    tool=self.name,
+                    details={"rule": "NFR-003", "reason": str(exc)[:500]},
+                )
+                raise
+        ctx.check_quota(self.name)
         started = time.monotonic()
         try:
             result = self.run(args, ctx)

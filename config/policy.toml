@@ -44,3 +44,93 @@ allow_localhost = true
 allowed_hosts = []           # e.g. ["*.staging.example.com"]
 max_seconds = 30.0
 screenshot_dir = ".aica/browser"
+
+[tools]
+# SEC-002. `deny` always wins - over `allow`, over `autonomy.allowed_tools`, over
+# everything - so switching a tool off never depends on also remembering to remove it
+# from an allowlist somewhere. `allow`, when non-empty, narrows *within* the groups
+# `autonomy.allowed_tools` already permits; it can never widen them.
+# Patterns: an exact tool name ("git.clone"), a group ("database"), or a prefix ("git.*").
+deny = []
+allow = []
+# SEC-001. What the environment classification actually changes, beyond the "production"
+# approval gate that already applies to every mutating tool once environment =
+# "production". Example: deny_in_production = ["shell", "database"]
+deny_in_production = []
+
+# SEC-004. Controlled secret injection. A caller NAMES a secret; it never supplies one,
+# because a value passed as a tool argument has already travelled through the prompt, the
+# plan and the session file before any gate sees it. Values live in the host environment
+# only - never here - and every injection is an audited SECRET_ACCESS approval.
+# [[secrets.definitions]]
+# name = "deploy_token"        # the name a tool asks for
+# env_var = "DEPLOY_TOKEN"     # where the value is read from, at the moment of use
+# inject_as = "GITHUB_TOKEN"   # optional: the name the receiving process expects
+# allowed_tools = ["shell.run"]  # which tools may receive it; empty means none
+# description = "Token for the release pipeline"
+
+[rbac]
+# ADM-001 / SEC-006. Off by default, so a single-developer workspace behaves exactly as
+# it did before: with `enabled = false` every principal holds every permission and
+# identity changes nothing. Turn it on for a shared deployment, where "approved" has to
+# mean "approved by someone entitled to", not "approved by whoever was running it".
+#
+# Roles: viewer (read), developer (read+write), approver (read+approve),
+# admin (read+administer). Approving is NOT implied by administering - they are
+# different jobs, and merging them turns four eyes into one pair. Roles only ever
+# narrow what the policy above already allows; they can never grant a withheld tool.
+enabled = false
+default_role = "viewer"     # what an unlisted principal gets: fail closed, not open
+separation_of_duties = true # SEC-006: whoever disabled a model/tool may not re-enable it
+# [[rbac.bindings]]
+# principal = "alice"
+# roles = ["developer"]
+# [[rbac.bindings]]
+# principal = "bob"
+# roles = ["approver", "admin"]
+
+[quotas]
+# ADM-005. Limits by user, team or project. Usage is counted from the audit log - the
+# same stream `aica usage` reports from - so the number that stops someone working is
+# the number an administrator is shown; a separate meter would drift.
+#
+# A quota bounds a WINDOW, not a run: [autonomy] already bounds a single run, and a
+# quota is the orthogonal control. Where several limits apply, the most restrictive
+# wins, so adding a team quota can only tighten what a user may do, never loosen it.
+# Exhaustion refuses and says which limit and when it resets - it never throttles.
+enabled = false
+# [[quotas.limits]]
+# scope = "principal"        # principal | team | project
+# name = "alice"
+# window_days = 1
+# max_actions = 500
+# max_model_calls = 200
+# max_commands = 100
+# max_tool_seconds = 3600
+# [[quotas.limits]]
+# scope = "team"
+# name = "core"
+# members = ["alice", "bob"]
+# max_model_calls = 1000
+
+[project]
+# ADM-002. Repositories have owners, policies and approved tools; the policies and the
+# approved tools are the rest of this file, and this is the owner. An owner holds the
+# `administer` permission for this project without a separate role binding - an
+# unowned-in-practice repository is how a policy file ends up with nobody able to change
+# it during an incident. Owning does NOT grant `approve`: owning a repository and being
+# entitled to wave through a destructive command are different things.
+name = "Enhanced AI Coding Agent"
+description = "Enterprise AI coding assistant agent (BRD v3)"
+repository = ""
+owners = []
+
+[adaptation]
+# BRD 13. Collecting agent runs as training data is off until an administrator turns it on,
+# and even then every run needs a human's approval before it can enter a dataset. Runs that
+# touch these paths, contain secrets, name a home directory or ran a destructive command are
+# excluded outright - never redacted.
+collection_enabled = false
+min_training_examples = 50
+# Full-weight fine-tuning makes a new base model rather than an adapter; off by default.
+allow_full_finetune = false

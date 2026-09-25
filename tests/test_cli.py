@@ -214,7 +214,7 @@ def test_gen_tests_and_commit_message_happy_path(
             "Add a totals helper for invoices\n\nSum the item amounts.\n",
         ]
     )
-    monkeypatch.setattr(cli, "_adapter", lambda args, ctx: (scripted, None))
+    monkeypatch.setattr(cli, "_adapter", lambda args, ctx, task=None: (scripted, None))
 
     assert run(repo, "gen-tests", "--file", "src/invoice.py", "--focus", "empty lists") == 0
     captured = capsys.readouterr()
@@ -268,7 +268,9 @@ def test_task_command_plans_executes_and_reports(
             "verification": ["unit"],
         }
     )
-    monkeypatch.setattr(cli, "_adapter", lambda args, ctx: (ScriptedAdapter([plan]), None))
+    monkeypatch.setattr(
+        cli, "_adapter", lambda args, ctx, task=None: (ScriptedAdapter([plan]), None)
+    )
 
     assert run(repo, "task", "check", "the", "invoice", "module") == 0
     captured = capsys.readouterr()
@@ -301,7 +303,9 @@ def test_task_plan_only_does_not_execute(
             "verification": [],
         }
     )
-    monkeypatch.setattr(cli, "_adapter", lambda args, ctx: (ScriptedAdapter([plan]), None))
+    monkeypatch.setattr(
+        cli, "_adapter", lambda args, ctx, task=None: (ScriptedAdapter([plan]), None)
+    )
 
     assert run(repo, "task", "--plan-only", "clean", "up") == 0
     assert "Plan for: clean up" in capsys.readouterr().out
@@ -315,7 +319,7 @@ def test_task_resume_without_a_saved_task_is_an_error(
     from aica.chat.session import Session, SessionStore
     from aica.models.fake import ScriptedAdapter
 
-    monkeypatch.setattr(cli, "_adapter", lambda args, ctx: (ScriptedAdapter([]), None))
+    monkeypatch.setattr(cli, "_adapter", lambda args, ctx, task=None: (ScriptedAdapter([]), None))
     session = Session(workspace=str(repo))
     SessionStore(repo).save(session)
     assert run(repo, "task", "--session", session.session_id, "--resume") == 2
