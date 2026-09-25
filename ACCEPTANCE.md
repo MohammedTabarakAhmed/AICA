@@ -102,10 +102,10 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] UX-009 final summary (outcome, changes, tests, warnings) (`TaskReport.render`)
 - [x] NFR-001 progressive/streaming responses (SSE streaming adapter; `ask_stream` yields deltas; CLI streams by default)
 - [x] LANG-001 Python: coding, RAG, testing, execution (AST chunking, pytest discovery/run — verified on this repo)
-- [ ] LANG-002 Java: coding, RAG, testing, build (chunking + maven/gradle discovery implemented; not verified on a real Java repo)
+- [x] LANG-002 Java: coding, RAG, testing, build (verified 2026-09-25 on a real Maven project - class, record, two JUnit 5 test classes - with OpenJDK 21.0.12 and Maven 3.9.16: `tests/integration/test_java_project.py`. Types retrieved by symbol and meaning, `mvn -B test` and the new `mvn -B package -DskipTests` build discovered, a real Surefire failure counted and located, and the agent fixed the bug, re-ran the suite and packaged the jar. Found: Surefire counts were read from the **first** `Tests run:` line, which is one test class, not the total - on a multi-class project the count was wrong and could show zero failures on a failing run; failure locations were never parsed; and Java had no build command at all. Gradle discovery exists but is not verified - no Gradle install)
 - [x] LANG-003 TypeScript/JavaScript (verified 2026-09-25 on a real TypeScript package with real Node 24 and npm - `tests/integration/test_typescript_project.py`: class/interface/function chunks retrieved by meaning and by symbol; npm `test` and `build` scripts discovered; a real node:test failure parsed to its file, line and assertion; and the agent loop fixed the bug, re-ran the real suite and the real build, and ended SUCCESS, confirmed by an independent `npm run test`. Using it found three bugs: node:test output was not parsed at all (a failing run reported `0 passed, 0 failed`, so the agent had no failure location); relative imports were stored raw, so `dependents_of` could never find a TS/JS importer and `node:test` was truncated to `node`; and on Windows any `aica` command crashed with UnicodeEncodeError printing Node's U+2716 after the work had already run. Not verified: Vitest/Jest output against a real install - their parsers exist but no package was installed from a registry. An index built before this fix keeps raw import targets for unchanged files until re-indexed with `--force`)
-- [ ] LANG-004 Go: (chunking + `go test`/`go vet` discovery implemented; not verified on a real Go repo)
-- [ ] LANG-005 Rust: (chunking + cargo discovery implemented; not verified on a real Rust repo)
+- [x] LANG-004 Go (verified 2026-09-25 on a real two-package module with Go 1.27.0: `tests/integration/test_go_rust_projects.py`. Found: plain `go test` names only failing tests, so the old parser counted *packages* as passes - 1 passed/1 failed for a run of 2 passed/1 failed - and never located a failure; discovery now runs `go test -v ./...`, counts tests, and attaches the `file:line` Go logs under each `=== RUN`. `go build ./...` added as the build check)
+- [x] LANG-005 Rust (verified 2026-09-25 on a real crate with a library and an integration-test binary, Rust 1.98.1 GNU toolchain: `tests/integration/test_go_rust_projects.py`. Found: only the first `test result:` line was read, so every test binary after the first went uncounted, and `cargo test` stops at the first failing binary, so later binaries never ran - discovery now uses `cargo test --no-fail-fast` and the totals are summed; panics are located from `panicked at file:line` (the newer format with a thread id included). `cargo build` added as the build check. The MSVC toolchain is not verified - the machine has no C++ build tools)
 - [x] LANG-006 SQL (statement chunking plus the database tools: dialect-correct generation, execution against SQLite verified end to end, PostgreSQL dialect statements asserted directly)
 - [x] LANG-007 YAML/JSON/TOML and approved configuration formats (section chunking; indexed and retrievable)
 
@@ -281,6 +281,18 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### LANG-002 Java, LANG-004 Go, LANG-005 Rust — 2026-09-25
+- Toolchains installed with the user's approval: Microsoft OpenJDK 21.0.12, Go 1.27.0 and
+  Rust 1.98.1 (GNU) via winget; Apache Maven 3.9.16 from dlcdn.apache.org, SHA-512 verified
+  against Apache's published checksum, extracted to `%USERPROFILE%	ools` and added to the
+  user PATH. GNU Rust because no MSVC C++ build tools are installed.
+- Each language was first run by hand on a real project with a seeded bug; every defect
+  found that way is now pinned by `tests/test_toolchain_output.py` (real captured output, no
+  toolchain needed) and by the integration tests, which skip where a toolchain is absent.
+- Checks: ruff/format clean, mypy strict 0 issues, **1081 passed, 2 skipped** (live model
+  and PostgreSQL only), 91% coverage.
+- Also merged PR #1 into `main` (merge commit 33044c3); this work is on `feat/lang-verification`.
 
 ### Phase 5 — fine-tuning and adaptation (BRD 13) — 2026-09-25
 - New `src/aica/adaptation/` (trajectories, curation, training, registry), `[adaptation]`
