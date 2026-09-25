@@ -43,7 +43,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] CHAT-004 debugging with logs/context (`chat.diagnostics.parse_log` structures Python/Node/Java/compiler/pytest output into frames + error; project frames are separated from library frames; `CodingAssistant.debug` retrieves the implicated code via `RepositoryIndex.search_file`, attaches the log as untrusted and returns the diagnosis; verified against a traceback produced by really running failing code; `aica debug --log`)
 - [x] CHAT-005 session context (`Session` + `build_context`, multi-turn, persisted)
 - [x] CHAT-006 task-scoped attachments (`Attachment`, fenced as untrusted)
-- [ ] CHAT-007 structured plans/diffs/tests/findings (plans, diffs as hunks and verification results are now rendered structurally on the web page (INT-003); review **findings** are returned as structured JSON by `POST /review` but the page does not render them yet)
+- [x] CHAT-007 structured plans/diffs/tests/findings (plans, diffs as hunks and verification results on the task view (INT-003); review **findings** on the Review view: severity chips, `file:line` location, category/requirement/provenance (which check, which model), detail, the offending code, and the suggestion, grouped by file worst-first. An incomplete review is flagged as such and never shown as "no findings"; discarded findings are counted with the reason. Verified in real Chromium, `tests/integration/test_web_ui.py`)
 
 ### Repository / RAG
 - [x] RAG-001 repository indexing (`RepositoryIndex.index_repository`; verified on this repo: 75 files, 915 chunks, 573 symbols)
@@ -281,6 +281,19 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### CHAT-007 review findings on the web page — 2026-09-25
+- A **Review** view in the web app (`index.html`, `app.js`, `app.css`) over the existing
+  `POST /review`: pasted diff or working tree, base ref, path, staged-only, check selection and
+  focus. Every value is inserted as text (SAFE-007). No API change was needed.
+- Two real-Chromium tests against a real server (only the model scripted): findings from all
+  three sources rendered with location and provenance (the static CWE-89 scan, the model's bug,
+  and the deterministic REV-004 test-adequacy finding); hostile markup in a model-written title
+  rendered as text; a finding outside the diff reported as discarded; and a review whose checks
+  failed shown as **incomplete**, not as clean.
+- The first test run expected 2 findings and the page showed 3. The third was a real
+  deterministic REV-004 finding, so the test was corrected, not the page.
+- Checks: ruff/format clean, mypy strict clean, **1083 passed, 2 skipped**, 91% coverage.
 
 ### Continuous integration (GitHub Actions) — 2026-09-25
 - `.github/workflows/ci.yml`: ruff, format check, mypy strict and pytest with coverage on every
