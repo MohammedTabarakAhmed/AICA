@@ -13,7 +13,12 @@ stays runnable offline and in CI:
 To verify a model other than the default, name it and the variable holding its key:
 
     set AICA_TEST_LIVE_MODEL_NAME=glm-4.7-flash
-    set AICA_TEST_LIVE_MODEL_KEY_ENV=GLM_API_KEY
+
+The variable holding the key is read from that model's ``api_key_env`` in config/models.toml
+(``AICA_TEST_LIVE_MODEL_KEY_ENV`` still overrides it). A model with no ``api_key_env`` - the
+local Ollama entry - needs only the opt-in and a running server:
+
+    set AICA_TEST_LIVE_MODEL_NAME=qwen2.5-coder-7b
 
 The opt-in is separate from the key on purpose: a key may be present in the environment for
 other reasons, and a test run should never spend someone's credit by accident. Prompts are
@@ -35,14 +40,20 @@ from aica.policy.models import NetworkMode, NetworkPolicy
 pytestmark = pytest.mark.integration
 
 LIVE = os.environ.get("AICA_TEST_LIVE_MODEL") == "1"
-KEY_ENV = os.environ.get("AICA_TEST_LIVE_MODEL_KEY_ENV", "DEEPSEEK_API_KEY")
 MODEL = os.environ.get("AICA_TEST_LIVE_MODEL_NAME") or None  # None: the configured default
 MODELS_FILE = "config/models.toml"
 POLICY_FILE = "config/policy.toml"
+# Only read the registry once opted in, so an offline run does no work here at all.
+KEY_ENV = os.environ.get("AICA_TEST_LIVE_MODEL_KEY_ENV") or (
+    ModelGateway.from_file(NetworkPolicy(), MODELS_FILE).config_for(MODEL).api_key_env
+    if LIVE
+    else None
+)
 
-if not LIVE or not os.environ.get(KEY_ENV):  # pragma: no cover - the skip is normal
+if not LIVE or (KEY_ENV and not os.environ.get(KEY_ENV)):  # pragma: no cover - normal skip
+    needs = f"set {KEY_ENV} and " if KEY_ENV else ""
     pytest.skip(
-        f"set {KEY_ENV} and AICA_TEST_LIVE_MODEL=1 to verify against a real provider",
+        f"{needs}set AICA_TEST_LIVE_MODEL=1 to verify against a real provider",
         allow_module_level=True,
     )
 
