@@ -139,7 +139,7 @@ function renderApprovalBanner(approvals) {
 
 // ------------------------------------------------------------------ views
 function showView(name) {
-  for (const view of ["task", "approvals", "models"]) $(`view-${view}`).hidden = view !== name;
+  for (const view of ["task", "review", "approvals", "models"]) $(`view-${view}`).hidden = view !== name;
   for (const button of document.querySelectorAll(".nav")) {
     button.classList.toggle("active", button.dataset.view === name);
   }
@@ -510,6 +510,129 @@ function renderApprovals(data) {
   if (!data.approvals.length) list.append(el("li", { class: "muted" }, "Nothing is waiting for a decision."));
 }
 
+// ------------------------------------------------------------------ review (CHAT-007, REV-001..007)
+const SEVERITIES = ["critical", "high", "medium", "low", "info"];
+
+async function runReview(event) {
+  event.preventDefault();
+  const error = $("review-error");
+  showError(error, null);
+  const checks = [...document.querySelectorAll("input[name=review-check]:checked")].map((c) => c.value);
+  if (!checks.length) {
+    error.textContent = "Choose at least one check.";
+    return;
+  }
+  const body = { checks, staged: $("review-staged").checked };
+  const diff = $("review-diff").value;
+  if (diff.trim()) body.diff = diff;
+  const base = $("review-base").value.trim();
+  if (base) body.base = base;
+  const path = $("review-path").value.trim();
+  if (path) body.path = path;
+  const focus = $("review-focus").value.trim();
+  if (focus) body.focus = focus;
+  const button = $("review-form").querySelector("button[type=submit]");
+  button.disabled = true;
+  button.textContent = "Reviewing...";
+  try {
+    renderReview(await api("/review", { method: "POST", body }));
+  } catch (e) {
+    showError(error, e);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Run review";
+  }
+}
+
+function renderReview(report) {
+  $("review-result").hidden = false;
+  const total = report.findings.length;
+
+  // An incomplete review is not a clean one: say so before anything else, and never show
+  // "no findings" as if the change had passed.
+  const status = $("review-status");
+  const failed = Object.entries(report.checks_failed || {});
+  if (!report.complete) {
+    status.textContent = "incomplete";
+    status.className = "state state-failed";
+  } else {
+    status.textContent = total ? `${total} finding${total === 1 ? "" : "s"}` : "no findings";
+    status.className = `state ${total ? "state-paused" : "state-finished"}`;
+  }
+  const incomplete = $("review-incomplete");
+  incomplete.hidden = report.complete && !report.truncated;
+  incomplete.replaceChildren(
+    el("strong", {}, report.complete ? "Diff truncated. " : "This review is incomplete. "),
+    report.complete
+      ? "Only part of the change was reviewed."
+      : "Missing findings do not mean the change is clean.",
+    failed.length ? el("ul", {}, ...failed.map(([check, why]) => el("li", {}, `${check}: ${why}`))) : null,
+  );
+
+  $("review-counts").replaceChildren(
+    ...SEVERITIES.filter((s) => report.counts[s]).map((s) =>
+      el("span", { class: `chip sev sev-${s}` }, `${report.counts[s]} ${s}`),
+    ),
+  );
+  const summary = $("review-summary");
+  summary.hidden = !report.summary;
+  summary.textContent = report.summary || "";
+  const files = report.files_reviewed.length;
+  $("review-meta").textContent =
+    `${files} file${files === 1 ? "" : "s"} reviewed - checks: ${report.checks_run.join(", ") || "none"}` +
+    ` - model: ${report.model || "none"}` +
+    (report.model_selection ? ` (${report.model_selection})` : "");
+
+  const container = $("review-findings");
+  container.replaceChildren(
+    ...Object.entries(report.by_file).map(([file, findings]) =>
+      el(
+        "div",
+        { class: "file review-file" },
+        el("div", { class: "file-head" }, el("strong", {}, file),
+          el("span", { class: "muted small-text" }, `${findings.length} finding${findings.length === 1 ? "" : "s"}`)),
+        ...findings.map(renderFinding),
+      ),
+    ),
+  );
+  if (!total) {
+    container.append(el("p", { class: report.complete ? "ok" : "warn" },
+      report.complete ? "No findings." : "No findings were produced, but the review did not finish."));
+  }
+
+  const dropped = $("review-dropped");
+  dropped.hidden = !report.dropped.length;
+  dropped.textContent = report.dropped.length
+    ? `${report.dropped.length} proposed finding${report.dropped.length === 1 ? " was" : "s were"} discarded ` +
+      `because its location was not in the change (REV-007): ` +
+      [...new Set(report.dropped.map((d) => d.reason))].join("; ")
+    : "";
+}
+
+function renderFinding(f) {
+  const source = f.origin + (f.model ? ` - ${f.model}` : "");
+  return el(
+    "div",
+    { class: `finding sev-border-${f.severity}` },
+    el(
+      "div",
+      { class: "finding-head" },
+      el("span", { class: `chip sev sev-${f.severity}` }, f.severity),
+      el("code", { class: "location" }, f.location),
+      el("strong", {}, f.title),
+    ),
+    el(
+      "div",
+      { class: "muted small-text" },
+      `${f.category} - ${f.requirement} - ${source}`,
+      f.confirmed_location ? null : el("span", { class: "warn" }, " - line re-anchored"),
+    ),
+    f.detail ? el("p", {}, f.detail) : null,
+    f.code ? el("pre", { class: "diff" }, f.code) : null,
+    f.suggestion ? el("p", { class: "suggestion" }, el("strong", {}, "Suggestion: "), f.suggestion) : null,
+  );
+}
+
 // ------------------------------------------------------------------ wiring
 document.addEventListener("DOMContentLoaded", () => {
   $("login-form").addEventListener("submit", (event) => {
@@ -520,6 +643,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("logout").addEventListener("click", () => signOut(""));
   $("new-session").addEventListener("click", () => createSession().catch(alertInline));
   $("task-form").addEventListener("submit", runTask);
+  $("review-form").addEventListener("submit", runReview);
   $("btn-pause").addEventListener("click", () => control("pause"));
   $("btn-resume").addEventListener("click", () => control("resume"));
   $("btn-cancel").addEventListener("click", () => control("cancel"));
