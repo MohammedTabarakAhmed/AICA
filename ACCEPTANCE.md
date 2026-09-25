@@ -167,7 +167,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] MM-002 manual selection (`--model`, `ModelGateway.get(name)`)
 - [x] MM-003 project default (`default` in `config/models.toml`)
 - [x] MM-004 task-specific model policy (`[[routing.rules]]` per `TaskKind`: completion, chat, coding, planning, review, testing, commit_message, embeddings, general - each may name a model, a fallback chain, extra required capabilities and a minimum context; every CLI command declares the kind of work it is about to do, and `POST /sessions/{id}/tasks` takes `task_kind`)
-- [ ] MM-005 GLM (configured as a first-class family with status `pending` until approved and deployed; reachable through the OpenAI-compatible adapter and exercised against a mocked endpoint, but NOT verified against a live GLM endpoint)
+- [x] MM-005 GLM (`glm-4.7-flash` on Z.ai's international endpoint, approved by the project owner 2026-09-25 and allowlisted as `api.z.ai`. **Verified live**: `tests/integration/test_live_model.py` 5/5 against the real endpoint (a real answer, real streaming, capabilities, a real agent plan, the network allowlist), and a real `aica task` routed to it by MM-010 fallback with no model named. Two provider behaviours needed config, not code: GLM-4.7 reasons first and spends the token budget doing it, so `extra_body.thinking` is disabled; the free tier answers 429 code 1305 ("overloaded") under load, so it gets `max_retries = 4`)
 - [ ] MM-006 Kimi (configured as a first-class family with status `pending` until approved and deployed; reachable through the OpenAI-compatible adapter and exercised against a mocked endpoint, but NOT verified against a live Kimi endpoint)
 - [ ] MM-007 DeepSeek (default model configured; adapter verified against a mocked OpenAI-compatible API, NOT against live DeepSeek)
 - [x] MM-008 future-model adapter abstraction (`ModelAdapter` protocol; agent core depends on no model family)
@@ -281,6 +281,36 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### MM-005 GLM live, and the first real agent runs — 2026-09-25
+- Config: `glm-4.7-flash` approved in `config/models.toml` (Z.ai free tier,
+  `https://api.z.ai/api/paas/v4`), `api.z.ai` added to `[network].allowed_hosts`, both with the
+  user's approval. The key is in the user's environment as `GLM_API_KEY`, and is never in the
+  repository or in any log.
+- New per-model options: `extra_body` (provider request fields; `model`/`messages`/`stream`/
+  `prompt`/`suffix` are refused, so config cannot change what is called or sent) and
+  `max_retries` (bounded backoff on 429/5xx/408, timeouts and dropped connections; Retry-After
+  honoured, capped at 30s; off by default so the router still fails over promptly). Provider
+  error text is now kept in the error, redacted: "HTTP 429" alone could not tell "overloaded"
+  from "quota exhausted".
+- Live results: `test_live_model.py` **5 passed** against GLM (131s, with retries absorbing
+  overloads).
+- **A real defect in the agent loop, found only by a real model (AG-004).** The repair prompt
+  after a failed step listed the earlier steps but not what they had returned. So a model
+  repairing an edit whose old text it had guessed never saw the file it had read, and could
+  only read it again, which is what GLM did until the budget ran out. Scripted tests could
+  not catch it, because a script already knows the file. Fixed: the repair prompt now carries the
+  completed steps' results, newest first, deduplicated, capped at 12,000 characters and fenced
+  as untrusted (SAFE-007). Pinned by `test_a_repair_is_shown_what_earlier_steps_returned`.
+- Real `aica task` runs on a throwaway repo with two planted bugs (4 tests, 3 failing):
+  before the fix, 10 steps and no edit (INCOMPLETE, honestly reported). After the fix, GLM
+  wrote a correct fix for the arithmetic bug (3 of 4 passing) but not for the range check. Two
+  later runs were stopped by the free tier itself: a 120s read timeout, then five consecutive
+  "overloaded" replies. **Every run reported INCOMPLETE with the real reason.** No false success.
+- Not closed by this: "Repository understanding -> edit -> test -> report works" and "Same
+  task can run against another approved model" (Business Acceptance). Both need a complete
+  live run, which the free tier's availability did not allow today.
+- Checks: ruff/format clean, mypy strict clean, **1090 passed, 2 skipped**, 91% coverage.
 
 ### CHAT-007 review findings on the web page — 2026-09-25
 - A **Review** view in the web app (`index.html`, `app.js`, `app.css`) over the existing
