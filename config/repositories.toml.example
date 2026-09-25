@@ -1,0 +1,34 @@
+# Approved repository connectors (INT-006). Copy to config/repositories.toml to enable them.
+#
+# Three deliberate edits approve a connector, each owned by whoever owns that file:
+#   1. this file names the repository and what the agent may do there;
+#   2. config/policy.toml [network].allowed_hosts lists the API host (SAFE-005), and
+#      [autonomy].allowed_tools lists "repository" (the group is off by default);
+#   3. config/policy.toml [[secrets.definitions]] declares the token by NAME (SEC-004);
+#      the value lives only in the host environment.
+#
+# Rules enforced by the loader:
+#   - A connector is selected BY NAME. A tool call never supplies a URL or a token.
+#   - One repository per connector: approving one repository is not approving an org.
+#   - api_url must be https (plain http only for loopback test servers).
+#   - permissions: read | pull_request | comment. Writes also need EXTERNAL approval.
+
+default = "origin"
+
+[[connectors]]
+name = "origin"
+provider = "github"
+api_url = "https://api.github.com"
+repository = "owner/name"
+secret = "github_token"          # a [[secrets.definitions]] name in config/policy.toml
+permissions = ["read", "pull_request", "comment"]
+enabled = true
+description = "this project's GitHub repository"
+
+# The matching policy entries (config/policy.toml):
+#
+# [[secrets.definitions]]
+# name = "github_token"
+# env_var = "GITHUB_TOKEN"
+# allowed_tools = ["repo.*"]
+# description = "GitHub token for the repository connector"

@@ -162,13 +162,16 @@ notes = "not yet approved or deployed"
 # configuration change and not an agent-core change (MM-008).
 [routing]
 # Tried in order when the chosen model is unavailable - a 5xx, a timeout, a rate limit, or a
-# credential that is not configured here (MM-010). Strongest free model first, and a second
-# provider before a second model of the same provider, so one provider's outage costs one step;
-# the local model is last because it is the weakest but needs no network. It is skipped for
-# planning and review, whose min_context it does not meet. Kimi is disabled today; the router
+# credential that is not configured here (MM-010). Ordered by evidence from 2026-09-25:
+# Groq qwen3.8 and GLM each completed a live end-to-end agent task, so they come first.
+# Gemini answered but was overloaded (503) often enough that each attempt could cost ~45s of
+# retries. gpt-oss answers chat but replies to the planner with a native tool call (HTTP 400,
+# not a fallback trigger), so reaching it would end a planning chain; it is placed after the
+# models that can plan. The local model is last: weakest, but needs no network, and skipped
+# for planning and review, whose min_context it does not meet. Kimi is disabled; the router
 # records each candidate it skips and why.
 fallbacks = [
-  "gemini-3.8-flash", "groq-gpt-oss-120b", "glm-4.7-flash", "groq-qwen3.8-27b",
+  "groq-qwen3.8-27b", "glm-4.7-flash", "gemini-3.8-flash", "groq-gpt-oss-120b",
   "qwen2.5-coder-7b", "kimi",
 ]
 

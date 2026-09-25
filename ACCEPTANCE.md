@@ -206,7 +206,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] INT-003 Web application (`src/aica/web/static`, served by `aica serve` at `/ui/`: sessions, tasks with model selection and kind of work, live progress over the event stream, pause/resume/cancel, plan and result with verification, diffs as decidable hunks, pending approvals and the model/routing table - 'manage sessions, tasks, models, diffs and approvals'. Plain HTML/CSS/JS with no build step and no third-party origin, so the page runs under `script-src 'self'` with no `unsafe-inline`; every value is inserted as text, and a task named `<img onerror=...>` was proved to render as text in a real browser. The page holds only the bearer token, in `sessionStorage` for that tab, so it can do nothing the API would not let the token do. Verified in real Chromium against a real uvicorn server: `tests/integration/test_web_ui.py`, with zero console errors or CSP violations. Not verified: that the static files ship in a built wheel - `package-data` is declared, but building one needs setuptools, which is not in the venv)
 - [ ] INT-004 approved collaboration integration
 - [ ] INT-005 approved CI/CD integration
-- [ ] INT-006 repository-provider integration
+- [x] INT-006 repository-provider integration (approved connectors by name in `config/repositories.toml`, GitHub first: `repo.info|pull_requests|pull_request|issue` reads, `repo.create_pull_request` and `repo.comment` writes, `git.push`. The token is a named SEC-004 secret behind an audited SECRET_ACCESS approval. Each connector declares permissions (read/pull_request/comment). Writes need EXTERNAL approval, outgoing text is redacted, provider content is fenced as untrusted and scanned, and the group is off unless enabled. **Verified live** against this private repository on 2026-09-25: real metadata, PR list, PR #7 with its 654-line diff, and one authorized comment on PR #7, confirmed through `gh` independently. 20 tests against a fake GitHub that records every request, including what must *not* be sent)
 - [x] ADM-001 RBAC (`RbacPolicy`/`Principal`: four roles - viewer, developer, approver, admin - assigned per principal in `config/policy.toml`. **Roles only ever narrow**: a principal's permissions are intersected with what policy already allows, so the admin role cannot grant a tool the policy file withholds and identity can never be a way around the existing controls. Approving is deliberately *not* implied by administering - they are different jobs, and merging them turns four eyes into one pair. Enforced in `ToolRegistry` (read vs write by the tool's own `mutating` flag), at the approval gate, and on every administrative change. An unlisted principal gets `default_role` (viewer), so a misconfiguration fails closed. Off by default so an existing single-developer workspace is unchanged: the whole suite passes identically with it disabled)
 - [x] ADM-002 project/repository administration (`ProjectPolicy`: name, description, repository and **owners**. The policies and approved tools ADM-002 asks for are the rest of `config/policy.toml`; what was missing was the owner, and an owner is only meaningful if it does something - so an owner holds `administer` for this project without a separate role binding, because an unowned-in-practice repository is how a policy file ends up with nobody able to change it during an incident. Ownership grants `administer` **only**: owning a repository and being entitled to wave through a destructive command are different things. `Policy.principal()` is the single place every surface derives the actor, so ownership is never missed by a caller that forgot to look)
 - [x] ADM-003 model administration (approval status, exact version pinning and retirement already live in the model registry `config/models.toml` (MM-001/MM-013); the **immediate** half is the control plane: `aica admin disable model <name>` stops it being served on the next call. The check runs *before* the adapter cache on purpose - a model already built for a long-running server must stop being served at once, or "immediately" means "after the next restart")
@@ -281,6 +281,34 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### INT-006 GitHub connector and INT-005 review workflow — 2026-09-25
+- **Connector (INT-006).** `config/repositories.toml` names approved connectors. Each one names a
+  single repository, an https API host, a SEC-004 secret *name* and its permissions. A call names the
+  connector, never a URL or a token. Changes approved by the user on 2026-09-25: `repository`
+  added to `[autonomy].allowed_tools`, `api.github.com` and `github.com` added to the network allowlist,
+  and a `github_token` secret (env `GITHUB_TOKEN`) usable only by `repo.*`, so `shell.run`
+  cannot ask for it.
+- **`git.push`**: current branch only, never force. A protected branch is refused rather than
+  approved (GIT-007: it changes through a reviewed merge). The remote host is checked against the
+  network policy, with https, ssh and scp-style URLs parsed. EXTERNAL approval shows the commits
+  that will leave.
+- **Live**: with a token from the user's `gh` login, loaded only into the test process,
+  the connector read the private repository's metadata, the open PRs, and PR #7 with its diff,
+  then posted one authorized comment on PR #7. `gh api` confirmed the comment independently.
+  The same reads showed that PR #6 had been merged, which `git fetch` confirmed.
+- **Review in CI (INT-005)**: `aica review --post-to-pr N --ci` posts the review and keeps a
+  single comment current across pushes (a hidden marker; an update GitHub refuses falls back to a new
+  comment). `--ci` uses `ScopedApprover`, which grants exactly SECRET_ACCESS and EXTERNAL for
+  `repo.comment` and denies everything else, a production run included. Workflow
+  `.github/workflows/agent-review.yml`: `pull_request` only (no fork code with secrets),
+  least privilege, event values passed through env, and fork PRs reviewed without posting.
+- **Found by the local dry run**: with no model key the review is honestly INCOMPLETE (exit 6),
+  and the first workflow draft failed the job on it, so every PR would have been red until
+  secrets were added. Now exit 7 means "could not post", which fails the job, while 6 is a
+  warning that the posted comment itself states.
+- INT-005 is ticked only after the workflow has run on its own pull request.
+- Checks: ruff/format clean, mypy strict clean (100 files), **1125 passed, 2 skipped**, 91%.
 
 ### End-to-end agent runs on live models, and what they found — 2026-09-25
 - Task: a throwaway git repository with two planted bugs in `src/pricing.py` (4 tests, 3

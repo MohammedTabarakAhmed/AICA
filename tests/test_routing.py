@@ -659,10 +659,10 @@ def test_the_local_model_is_a_fallback_only_for_work_that_fits_its_served_window
     chat, _, _ = router(gw).candidates(TaskKind.CHAT)
     assert chat == [
         "deepseek-chat",
+        "groq-qwen3.8-27b",
+        "glm-4.7-flash",
         "gemini-3.8-flash",
         "groq-gpt-oss-120b",
-        "glm-4.7-flash",
-        "groq-qwen3.8-27b",
         "qwen2.5-coder-7b",
     ]
 
