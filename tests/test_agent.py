@@ -226,6 +226,81 @@ def test_failed_step_is_replaced_and_the_task_continues(workspace: Path) -> None
     assert report.steps_used == 2
 
 
+def test_a_repair_is_shown_what_earlier_steps_returned(workspace: Path) -> None:
+    """AG-004, found by the first run against a live model: an edit planned before the file
+    was read guesses its old text. The repair must see the read's result to fix it, or the
+    only move left to the model is to read the file again, which is what a real model did."""
+    ctx = make_ctx(workspace)
+    adapter = ScriptedAdapter(
+        [
+            plan_json(
+                READ,
+                {
+                    "intent": "fix",
+                    "tool": "fs.edit",
+                    "arguments": {
+                        "path": "src/app.py",
+                        "old_text": "return a+b",  # a guess: the file says "a + b"
+                        "new_text": "return a - b",
+                    },
+                },
+            ),
+            json.dumps(
+                {
+                    "action": "replace",
+                    "reason": "copy the old text exactly from the read",
+                    "steps": [
+                        {
+                            "intent": "fix",
+                            "tool": "fs.edit",
+                            "arguments": {
+                                "path": "src/app.py",
+                                "old_text": "return a + b",
+                                "new_text": "return a - b",
+                            },
+                        }
+                    ],
+                }
+            ),
+        ]
+    )
+    AgentLoop(adapter, default_registry()).run("make add subtract", ctx)
+
+    repair_prompt = adapter.calls[1][-1].content
+    assert "Results of completed steps" in repair_prompt
+    assert "return a + b" in repair_prompt  # what the read actually returned
+    assert "<<<UNTRUSTED" in repair_prompt  # file content is data, not instructions
+    assert "return a - b" in (workspace / "src" / "app.py").read_text(encoding="utf-8")
+
+
+def test_observations_are_bounded_and_not_repeated(workspace: Path) -> None:
+    from aica.agent.loop import MAX_OBSERVATION_CHARS
+
+    state = AgentState(
+        task="t",
+        plan=parse_plan(plan_json(READ, READ), "t", default_registry(), make_ctx(workspace)),
+    )
+    for step in state.plan.steps:
+        step.status = StepStatus.SUCCEEDED
+        step.result = "x" * 100
+    text = AgentLoop._observations(state)
+    assert text.count("<<<UNTRUSTED") == 1  # the same read twice is shown once
+
+    big = parse_plan(
+        plan_json(*[{**READ, "arguments": {"path": f"f{i}.py"}} for i in range(10)]),
+        "t",
+        default_registry(),
+        make_ctx(workspace),
+    )
+    state = AgentState(task="t", plan=big)
+    for step in state.plan.steps:
+        step.status = StepStatus.SUCCEEDED
+        step.result = "§" * 4000
+    text = AgentLoop._observations(state)
+    assert text.count("§") <= MAX_OBSERVATION_CHARS
+    assert "s10" in text and "s1 " not in text  # newest first, oldest dropped
+
+
 def test_skip_adaptation_marks_the_step_and_warns(workspace: Path) -> None:
     ctx = make_ctx(workspace)
     adapter = ScriptedAdapter(

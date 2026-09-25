@@ -19,7 +19,7 @@ environment = "development"
 # layer can be verified against a real provider (BRD Business Acceptance #1). The
 # credential itself is never stored here - config/models.toml names DEEPSEEK_API_KEY.
 mode = "allowlist"
-allowed_hosts = ["api.deepseek.com"]
+allowed_hosts = ["api.deepseek.com", "api.z.ai"]
 
 [approval]
 require_for = [

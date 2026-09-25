@@ -605,7 +605,7 @@ def test_the_repository_registry_is_valid_and_declares_its_families() -> None:
     families = {i.family for i in gw.list_models(include_unusable=True)}
     assert {"deepseek", "glm", "kimi"} <= families
     # Only what is approved and deployed is usable today.
-    assert [i.name for i in gw.list_models()] == ["deepseek-chat"]
+    assert [i.name for i in gw.list_models()] == ["deepseek-chat", "glm-4.7-flash"]
     assert gw.default_name() == "deepseek-chat"
     # And the routing rules in that file resolve to models that exist.
     assert gw.routing.rule_for(TaskKind.PLANNING) is not None

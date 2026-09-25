@@ -201,10 +201,114 @@ def test_repo_models_file_is_valid() -> None:
     names = [m.name for m in gw.list_models()]
     assert gw.default_name() == "deepseek-chat"
     assert "deepseek-chat" in names  # MM-007 DeepSeek is first-class
-    assert "glm-4" not in names and "kimi" not in names  # disabled until approved
+    assert "glm-4.7-flash" in names  # MM-005 GLM, approved 2026-09-25
+    assert "kimi" not in names  # disabled until approved
 
 
 def test_scripted_adapter_embeddings_are_normalized() -> None:
     vecs = ScriptedAdapter().embed(["alpha beta", "alpha beta"])
     assert vecs[0] == vecs[1]
     assert abs(sum(v * v for v in vecs[0]) - 1.0) < 1e-6
+
+
+# ---------------------------------------------------------------- provider options and retries
+
+
+def test_extra_body_is_sent_but_cannot_replace_the_adapters_fields() -> None:
+    """GLM's thinking switch reaches the provider; the model and messages stay the adapter's."""
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "42"}}]})
+
+    adapter = _adapter(handler, extra_body={"thinking": {"type": "disabled"}})
+    assert adapter.chat([ChatMessage(role="user", content="x")]).content == "42"
+    assert seen[0]["thinking"] == {"type": "disabled"}
+    assert seen[0]["model"] == "deepseek-chat"
+
+    with pytest.raises(ValueError, match="model"):
+        _adapter(handler, extra_body={"model": "something-else"})
+    with pytest.raises(ValueError, match="extra_body"):
+        ModelConfig(
+            name="m",
+            family="glm",
+            version="v",
+            base_url="https://api.example.com",
+            extra_body={"messages": []},
+        )
+
+
+def test_overloaded_provider_is_retried_then_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 429 "overloaded" is retried with backoff; the call succeeds without the router."""
+    waits: list[float] = []
+    monkeypatch.setattr(OpenAICompatibleAdapter, "_sleep", staticmethod(waits.append))
+    replies = iter(
+        [
+            httpx.Response(429, json={"error": {"code": "1305", "message": "overloaded"}}),
+            httpx.Response(503, text="busy", headers={"Retry-After": "7"}),
+            httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]}),
+        ]
+    )
+    adapter = _adapter(lambda r: next(replies), max_retries=3)
+    assert adapter.chat([ChatMessage(role="user", content="x")]).content == "ok"
+    assert waits == [2.0, 7.0]  # exponential by default, Retry-After when the provider says
+
+
+def test_retries_are_bounded_and_the_providers_reason_is_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+    monkeypatch.setattr(OpenAICompatibleAdapter, "_sleep", staticmethod(waits.append))
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            429,
+            json={"error": {"message": "overloaded", "key": "sk-abcdefghijklmnopqrstuvwxyz0123"}},
+            headers={"Retry-After": "600"},
+        )
+
+    with pytest.raises(ModelUnavailable) as err:
+        _adapter(handler, max_retries=2).chat([ChatMessage(role="user", content="x")])
+    assert calls == 3
+    assert waits == [30.0, 30.0]  # a provider cannot park the agent for ten minutes
+    message = str(err.value)
+    assert "after 3 attempts" in message and "overloaded" in message
+    assert "sk-abcdefghijklmnopqrstuvwxyz0123" not in message  # SAFE-006: redacted
+
+
+def test_no_retries_by_default_so_the_router_fails_over_promptly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        OpenAICompatibleAdapter, "_sleep", staticmethod(lambda s: pytest.fail("slept"))
+    )
+    with pytest.raises(ModelUnavailable, match="HTTP 429: nope"):
+        _adapter(lambda r: httpx.Response(429, text="nope")).chat(
+            [ChatMessage(role="user", content="x")]
+        )
+
+
+def test_a_timeout_is_retried_like_an_overload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A free tier that goes quiet for the whole timeout is retried, within the same bound."""
+    waits: list[float] = []
+    monkeypatch.setattr(OpenAICompatibleAdapter, "_sleep", staticmethod(waits.append))
+    outcomes = iter([True, False])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if next(outcomes):
+            raise httpx.ReadTimeout("timed out", request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    adapter = _adapter(handler, max_retries=1)
+    assert adapter.chat([ChatMessage(role="user", content="x")]).content == "ok"
+    assert waits == [2.0]
+
+    def always(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    with pytest.raises(ModelUnavailable, match="ReadTimeout"):
+        _adapter(always, max_retries=1).chat([ChatMessage(role="user", content="x")])
