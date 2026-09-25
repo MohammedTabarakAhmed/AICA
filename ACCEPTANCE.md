@@ -243,16 +243,16 @@ requirements are not lost. The BRD section is cited on each line.
 
 ## Phase 5 — Fine-Tuning / Adaptation
 
-- [ ] Approved trajectory/data collection
-- [ ] Unsafe/low-quality data filtering
-- [ ] SFT support where appropriate
-- [ ] QLoRA/adapters where appropriate
-- [ ] Base-model/adapter separation
-- [ ] Dataset/config/adapter versioning
-- [ ] Golden-task evaluation
-- [ ] Security and quality promotion gates
-- [ ] Rollback
-- [ ] Secret/restricted-data exclusion
+- [x] Approved trajectory/data collection (`aica.adaptation`; `aica adapt collect|candidates|approve|decline`. Off unless `[adaptation] collection_enabled`; collecting needs `administer`; trajectories come from the persisted `AgentState`, so what is collected is exactly what resumed runs rely on; each needs a human's `approve`, and with RBAC on not the run's own author (SEC-006 rule); decisions final; content-addressed ids make collection idempotent. Verified end to end from a genuine agent run - real edit, real pytest - in `tests/integration/test_adaptation_pipeline.py`)
+- [x] Unsafe/low-quality data filtering (`screen`: *quality* - only runs whose required verification all passed, with no unrepaired failure; an unverified run that claimed success is exactly what must not be learned (TEST-009). *safety* - destructive/privileged/external commands, prompt-injection markers. An excluded run can never be approved. Every exclusion names its reasons)
+- [ ] SFT support where appropriate (prepared, **not executed**: datasets are written in a chat SFT format and `aica adapt plan` validates a configuration and writes a content-addressed job spec - base model approved and at an exact version, dataset verified, `min_training_examples` met, full fine-tuning refused unless `allow_full_finetune`. No training has run: this machine has no GPU and training infrastructure is outside the BRD's scope)
+- [ ] QLoRA/adapters where appropriate (QLoRA is the default method - 4-bit base enforced, rank/alpha/dropout/target modules versioned - and produced adapters are registered, gated, served and rolled back (see below). Open for the same reason as SFT: no adapter has been trained here)
+- [x] Base-model/adapter separation (base models stay in `config/models.toml` (MM-001); adapters live in `.aica/adaptation/adapters.json`, each pinned to the exact base version it was trained on. A full fine-tune is refused registration as an adapter. The gateway applies the promoted adapter per call and **refuses** one whose base version no longer matches - an adapter on other weights is an unevaluated model)
+- [x] Dataset/config/adapter versioning (datasets and training configs are content-addressed and immutable - an edited dataset fails `verify_dataset` before anything trains on or promotes from it; adapters are `name@N` with the artifact's file digest, dataset version, config version and base version, and an append-only event history)
+- [ ] Golden-task evaluation (the path exists - `aica eval run --adapter ID --out` evaluates a registered, unpromoted adapter on its base model, and provenance records the adapter - and the suite gained its first `security`-tagged task, `parameterize-sql-query`, which the unfixed code fails 2 of 3. Open: no adapter has been evaluated, which needs a live model serving one)
+- [x] Security and quality promotion gates (`aica adapt evaluate`: the quality gate is EVAL-008's release gate, optionally against a baseline; the **security gate is separate and stricter** - the suite must contain `security`-tagged tasks and the adapter must pass every one, with no false success. The report must be *of this adapter* (base, base version and serving id) and from a real model - a scripted report is refused. Promotion needs `approve`, a passed gate, a different principal from the registrant, the same base version, and a dataset that still verifies)
+- [x] Rollback (`aica adapt rollback <model>` returns the model to the previously promoted adapter, or to the bare base model; the gateway re-reads the active adapter per call and keys its cache by adapter, so a promotion or rollback changes what is served on the next call without a restart. Verified through the real gateway: promote, promote again, roll back twice)
+- [x] Secret/restricted-data exclusion (**excluded, never redacted**: a run containing secret-like content, touching `exclude_paths` (.env, keys, credentials by default) or naming a path inside a user's home directory is dropped, and the screen is re-applied at dataset build so tightening the policy after approval still takes effect. Redaction suits logs a person reads; a model memorises whatever a pattern missed)
 
 ## Business Acceptance
 
@@ -281,6 +281,23 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### Phase 5 — fine-tuning and adaptation (BRD 13) — 2026-09-25
+- New `src/aica/adaptation/` (trajectories, curation, training, registry), `[adaptation]`
+  policy section, `aica adapt ...`, `aica eval run --adapter`, gateway `adapters=` overlay
+  and `effective_config()`, `ModelConfig.exact_version`, `TaskResult.tags`, golden task
+  `evaluation/tasks/parameterize-sql-query.toml` (tagged `security`).
+- Checks: ruff/format clean, mypy strict 0 issues (96 files), **1067 passed, 2 skipped**
+  (env-gated), 91% coverage; `tests/test_adaptation.py` 41 tests and the end-to-end
+  `tests/integration/test_adaptation_pipeline.py` (genuine agent run -> collect -> approve ->
+  dataset -> plan -> register -> gate -> promote -> rollback, through the CLI).
+- Stand-ins, named as such: adapter files (nothing trains here - no GPU) and the golden
+  report used for gating (a real one needs a live model serving the adapter).
+- Found on the way: **the CLI never gave its gateway the control plane**, so `aica admin
+  disable model X` was not enforced on the command line - only over HTTP. SEC-007/ADM-003
+  claimed "immediately"; now every CLI gateway is built in one helper that passes the
+  controls, pinned by a test. Also: a genuine run's test command carried the interpreter's
+  absolute path, which under a home directory names the developer - now excluded.
 
 ### INT-003 web application and CC-005 — 2026-09-25
 - New: `src/aica/web/` (index.html, app.js, app.css), `src/aica/review/acceptance.py`,

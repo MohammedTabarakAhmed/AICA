@@ -20,6 +20,7 @@ import os
 import re
 import tomllib
 from pathlib import Path
+from typing import Protocol
 from urllib.parse import urlparse
 
 import httpx
@@ -82,6 +83,11 @@ class ModelConfig(BaseModel):
         return urlparse(self.base_url).hostname or ""
 
     @property
+    def exact_version(self) -> bool:
+        """False for a moving alias such as ``latest``, which names different weights over time."""
+        return not _FLOATING.search(self.version)
+
+    @property
     def request_model(self) -> str:
         """What goes in the request's ``model`` field: the adapter when one is approved."""
         return self.adapter or self.version
@@ -140,6 +146,25 @@ class NetworkDenied(PermissionError):
     pass
 
 
+class ActiveAdapterSource(Protocol):
+    """Where the gateway learns which promoted adapter to serve (BRD 13).
+
+    Implemented by ``aica.adaptation.registry.AdapterRegistry``; declared here so the
+    gateway does not import the adaptation package, which itself depends on the gateway.
+    """
+
+    def active_for(self, base_model: str) -> ActiveAdapterLike | None: ...
+
+
+class ActiveAdapterLike(Protocol):
+    @property
+    def adapter_id(self) -> str: ...
+    @property
+    def serving_id(self) -> str: ...
+    @property
+    def base_version(self) -> str: ...
+
+
 class ModelGateway:
     def __init__(
         self,
@@ -147,11 +172,13 @@ class ModelGateway:
         network: NetworkPolicy,
         transport: httpx.BaseTransport | None = None,
         controls: ControlPlane | None = None,
+        adapters: ActiveAdapterSource | None = None,
     ) -> None:
         self._config = config
         self._network = network
         self._transport = transport
         self._controls = controls  # SEC-007; None = no control plane wired up
+        self._adapters = adapters  # BRD 13; None = no promoted adapters are applied
         self._cache: dict[str, ModelAdapter] = {}
 
     @classmethod
@@ -161,6 +188,7 @@ class ModelGateway:
         path: str | os.PathLike[str] | None = None,
         transport: httpx.BaseTransport | None = None,
         controls: ControlPlane | None = None,
+        adapters: ActiveAdapterSource | None = None,
     ) -> ModelGateway:
         candidate = (
             Path(path)
@@ -168,11 +196,11 @@ class ModelGateway:
             else Path(os.environ.get("AICA_MODELS_FILE", str(DEFAULT_MODELS_PATH)))
         )
         if not candidate.exists():
-            return cls(ModelsConfig(), network, transport, controls)
+            return cls(ModelsConfig(), network, transport, controls, adapters)
         try:
             with candidate.open("rb") as fh:
                 data = tomllib.load(fh)
-            return cls(ModelsConfig.model_validate(data), network, transport, controls)
+            return cls(ModelsConfig.model_validate(data), network, transport, controls, adapters)
         except (tomllib.TOMLDecodeError, ValidationError) as exc:
             raise ModelError(f"invalid models file {candidate}: {exc}") from exc
 
@@ -224,8 +252,12 @@ class ModelGateway:
             disabled = self._controls.is_disabled(TargetKind.MODEL, cfg.name, cfg.family)
             if disabled is not None:
                 raise ModelDisabled(disabled.describe())
-        if cfg.name in self._cache:
-            return self._cache[cfg.name]
+        cfg = self._with_promoted_adapter(cfg)
+        # Keyed by adapter too: a promotion or rollback must change what is served on the
+        # next call, not whenever this process happens to restart.
+        key = f"{cfg.name}+{cfg.adapter}" if cfg.adapter else cfg.name
+        if key in self._cache:
+            return self._cache[key]
         if not self._network.is_host_allowed(cfg.host):
             raise NetworkDenied(
                 f"model endpoint host {cfg.host!r} is not allowed by network policy; "
@@ -244,8 +276,33 @@ class ModelGateway:
             cfg.info(),
             transport=self._transport,
         )
-        self._cache[cfg.name] = adapter
+        self._cache[key] = adapter
         return adapter
+
+    def effective_config(self, name: str | None = None) -> ModelConfig:
+        """The entry as it would be served now, promoted adapter included (MM-012)."""
+        return self._with_promoted_adapter(self.config_for(name))
+
+    def _with_promoted_adapter(self, cfg: ModelConfig) -> ModelConfig:
+        """Apply the adapter promoted for this model, re-read on every call (BRD 13)."""
+        if self._adapters is None:
+            return cfg
+        active = self._adapters.active_for(cfg.name)
+        if active is None:
+            return cfg
+        if active.base_version != cfg.version:
+            # An adapter on weights it was not trained on is a different, unevaluated model.
+            raise ModelError(
+                f"adapter {active.adapter_id} was trained on {cfg.name} version "
+                f"{active.base_version}, but the registry now serves {cfg.version}; roll it "
+                "back or evaluate and promote an adapter for the new version"
+            )
+        if cfg.status is not ModelStatus.APPROVED:
+            raise ModelError(
+                f"adapter {active.adapter_id} is promoted for {cfg.name}, whose status is "
+                f"{cfg.status.value}; an adapter may only be served for an approved model"
+            )
+        return cfg.model_copy(update={"adapter": active.serving_id})
 
     def register(self, name: str, adapter: ModelAdapter) -> None:
         """Inject a pre-built adapter (tests, fakes, future in-process providers)."""

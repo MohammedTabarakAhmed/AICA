@@ -124,3 +124,13 @@ name = "Enhanced AI Coding Agent"
 description = "Enterprise AI coding assistant agent (BRD v3)"
 repository = ""
 owners = []
+
+[adaptation]
+# BRD 13. Collecting agent runs as training data is off until an administrator turns it on,
+# and even then every run needs a human's approval before it can enter a dataset. Runs that
+# touch these paths, contain secrets, name a home directory or ran a destructive command are
+# excluded outright - never redacted.
+collection_enabled = false
+min_training_examples = 50
+# Full-weight fine-tuning makes a new base model rather than an adapter; off by default.
+allow_full_finetune = false

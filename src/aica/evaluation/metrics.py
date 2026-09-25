@@ -70,6 +70,8 @@ class TaskResult:
     retrieved: list[str] = field(default_factory=list)
 
     error: str = ""
+    # The golden task's tags, so a gate can hold a class of task - security - to its own bar.
+    tags: list[str] = field(default_factory=list)
 
     @property
     def as_expected(self) -> bool:

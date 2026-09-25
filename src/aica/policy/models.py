@@ -303,6 +303,42 @@ class QuotaLimit(BaseModel):
         return f"{who} per {self.window_days}d: {bounds or 'no bounds set'}"
 
 
+class AdaptationPolicy(BaseModel):
+    """BRD section 13: fine-tuning and domain adaptation.
+
+    Off by default. Collecting agent trajectories for training is a decision about the
+    organisation's code and its developers' work, so nothing is collected until policy
+    says so - and even then each trajectory needs a human's approval before it can enter a
+    dataset.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    collection_enabled: bool = False
+    # Trajectories touching any of these paths are excluded outright - not redacted -
+    # because a training example that once contained restricted data cannot be trusted to
+    # have had all of it removed. Glob patterns, matched against repository paths.
+    exclude_paths: list[str] = Field(
+        default_factory=lambda: [
+            ".env",
+            "*.env",
+            "**/.env",
+            "**/*.pem",
+            "**/*.key",
+            "**/secrets/**",
+            "**/credentials*",
+            "**/*.p12",
+            "**/id_rsa*",
+        ]
+    )
+    # A dataset smaller than this is refused for training: a handful of examples teaches a
+    # model to reproduce them, not the behaviour they illustrate.
+    min_training_examples: int = Field(default=50, ge=1, le=10_000_000)
+    # Full-weight fine-tuning produces a new base model rather than an adapter. The BRD asks
+    # for base models and adapters to be kept separate, so it is off unless chosen.
+    allow_full_finetune: bool = False
+
+
 class QuotaPolicy(BaseModel):
     """The configured limits (ADM-005). Empty means no quotas, which is the default."""
 
@@ -490,6 +526,7 @@ class Policy(BaseModel):
     rbac: RbacPolicy = Field(default_factory=RbacPolicy)  # ADM-001, SEC-006
     quotas: QuotaPolicy = Field(default_factory=QuotaPolicy)  # ADM-005
     project: ProjectPolicy = Field(default_factory=ProjectPolicy)  # ADM-002
+    adaptation: AdaptationPolicy = Field(default_factory=AdaptationPolicy)  # BRD 13
 
     def principal(self, name: str) -> Principal:
         """The acting principal, with repository ownership applied (ADM-001, ADM-002).
