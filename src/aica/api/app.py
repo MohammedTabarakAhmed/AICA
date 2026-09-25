@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from aica.admin.approval_queue import ApprovalError, ApprovalQueue, QueueingApprover
@@ -55,7 +55,7 @@ from aica.approvals import (
 )
 from aica.audit import AuditLog, EventCategory, JsonlAuditSink, Outcome
 from aica.chat.assistant import CodingAssistant
-from aica.chat.session import Session, SessionStore
+from aica.chat.session import Session, SessionConflict, SessionStore
 from aica.models.base import ModelError, ModelInfo
 from aica.models.gateway import ModelGateway
 from aica.models.routing import ModelRouter, Selection, TaskKind
@@ -67,6 +67,7 @@ from aica.review.reviewer import DEFAULT_CHECKS, CodeReviewer, ReviewCheck, Revi
 from aica.tools import ToolContext, default_registry
 from aica.tools.base import ToolArgumentError, ToolError, ToolNotAllowed
 from aica.workspace import GitGuard, WorkspaceGuard
+from aica.workspace.lease import RepositoryBusy, RepositoryLease
 from aica.workspace.project_context import ProjectContextStore, project_conventions_block
 
 TOKEN_ENV = "AICA_API_TOKEN"  # noqa: S105 - the name of an environment variable, not a secret
@@ -218,6 +219,11 @@ def create_app(settings: ApiSettings) -> FastAPI:
     app.state.manager = manager
     app.state.token = token
 
+    @app.exception_handler(SessionConflict)
+    def session_conflict(_: Request, exc: SessionConflict) -> JSONResponse:
+        # NFR-003: another writer saved the session first. Nothing was overwritten.
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
     def require_token(
         authorization: Annotated[str | None, Header()] = None,
     ) -> None:
@@ -295,9 +301,15 @@ def create_app(settings: ApiSettings) -> FastAPI:
 
     def load_session(session_id: str) -> Session:
         try:
-            return store().load(session_id)
+            session = store().load(session_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"unknown session {session_id}") from exc
+        try:
+            # NFR-003: with RBAC on, a peer may not continue someone else's session.
+            session.check_access(load_policy(settings.policy_file).principal(settings.actor))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return session
 
     def _queued(ctx: ToolContext, reason: str) -> str:
         """Name the queued request in a 409, so the refusal says where to decide it."""
@@ -314,6 +326,10 @@ def create_app(settings: ApiSettings) -> FastAPI:
         except ApprovalRequired as exc:
             # 409: the request was understood and refused pending a human decision.
             raise HTTPException(status_code=409, detail=_queued(ctx, str(exc))) from exc
+        except RepositoryBusy as exc:
+            # NFR-003: an agent task holds this working tree; editing it now would land
+            # in the middle of that run.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (ToolNotAllowed, PermissionError) as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ToolArgumentError as exc:
@@ -341,6 +357,7 @@ def create_app(settings: ApiSettings) -> FastAPI:
             title=request.title,
             model_name=request.model,
             policy_version=policy.version,
+            owner=settings.actor,  # NFR-003
         )
         if request.branch:
             session.task_state["branch"] = request.branch
@@ -423,23 +440,47 @@ def create_app(settings: ApiSettings) -> FastAPI:
         except Exception:
             index.close()
             raise
+        # NFR-003: one agent task per working tree. Taken last, after everything that can
+        # fail cheaply, and held until the worker ends however it ends.
+        repository = RepositoryLease(ctx.workspace.root)
+        try:
+            lease = repository.acquire(
+                actor=settings.actor,
+                session_id=session_id,
+                task=request.task,
+                ttl_seconds=budget.max_seconds,
+            )
+        except RepositoryBusy as exc:
+            index.close()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        ctx.lease_holder = lease.holder
+
+        def finish() -> None:
+            try:
+                repository.release(lease)
+            finally:
+                # The task borrows this index for its whole run; the request cannot close it.
+                index.close()
+
         loop = AgentLoop(adapter, default_registry())
-        record = manager.start(
-            loop,
-            request.task,
-            ctx,
-            session_id=session_id,
-            budget=budget,
-            context=context,
-            conventions=conventions,
-            state=state,
-            # The task borrows this index for its whole run; the request cannot close it.
-            on_finish=index.close,
-        )
+        try:
+            record = manager.start(
+                loop,
+                request.task,
+                ctx,
+                session_id=session_id,
+                budget=budget,
+                context=context,
+                conventions=conventions,
+                state=state,
+                on_finish=finish,
+            )
+        except Exception:
+            finish()
+            raise
         # MM-012: the caller is told exactly which model this run went to, and what it would
         # fall back to, rather than having to infer it from the finished report.
-        session.model_name = selection.name
-        store().save(session)
+        store().update(session, lambda latest: setattr(latest, "model_name", selection.name))
         return {
             "task_id": record.id,
             "session_id": session_id,
@@ -501,9 +542,11 @@ def create_app(settings: ApiSettings) -> FastAPI:
         if paused:
             record.wait(timeout=30.0)
             if record.agent_state is not None:
-                session = load_session(record.session_id)
-                session.task_state[STATE_KEY] = record.agent_state.to_json()
-                store().save(session)
+                saved_state = record.agent_state.to_json()
+                store().update(
+                    load_session(record.session_id),
+                    lambda latest: latest.task_state.__setitem__(STATE_KEY, saved_state),
+                )
         return {"task_id": task_id, "paused": paused, "state": record.state.value}
 
     @app.post("/tasks/{task_id}/resume", status_code=202, dependencies=guard)
@@ -795,6 +838,34 @@ def create_app(settings: ApiSettings) -> FastAPI:
         return payload
 
     # ------------------------------------------------------------------ administration
+    @app.get("/admin/lease", dependencies=guard)
+    def get_lease() -> dict[str, Any]:
+        """NFR-003: which agent task, if any, holds this working tree."""
+        try:
+            lease = RepositoryLease(settings.workspace.resolve()).current()
+        except RepositoryBusy as exc:
+            return {"busy": True, "lease": None, "detail": str(exc)}
+        return {"busy": lease is not None, "lease": lease.public() if lease else None}
+
+    @app.post("/admin/lease/break", dependencies=guard)
+    def break_lease() -> dict[str, Any]:
+        """NFR-003: release a lease left by a dead process. Administrative and audited."""
+        ctx, index = build_context()
+        try:
+            ctx.require_permission(Permission.ADMINISTER, "break a repository lease")
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        finally:
+            index.close()
+        broken = RepositoryLease(ctx.workspace.root).force_release()
+        ctx.audit.record(
+            category=EventCategory.POLICY_DECISION,
+            action="repository lease broken",
+            outcome=Outcome.SUCCESS,
+            details={"rule": "NFR-003", "lease": broken.public() if broken else None},
+        )
+        return {"broken": broken is not None, "lease": broken.public() if broken else None}
+
     @app.get("/admin/controls", dependencies=guard)
     def list_controls() -> dict[str, Any]:
         """SEC-007: what is currently switched off."""

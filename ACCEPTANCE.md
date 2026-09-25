@@ -238,7 +238,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] SEC-005 configurable retention/deletion of sessions, source-derived context, trajectories (BRD §16) (three **separate scopes**, not one sweep, because the three mean different things: the audit trail is evidence and is aged by the date in its filename; sessions (`.aica/sessions`, which hold the conversation and the agent's task state, i.e. the trajectory) are personal working state aged by modification time; and source-derived context (`.aica/index`, `.aica/browser`, `.aica/snapshots`) is a rebuildable cache. An operator deleting one is not made to delete the others - a test asserts a sessions run leaves the audit trail intact. `aica retention --scope audit|sessions|context|all [--apply]`, `POST /admin/retention`; dry run by default, `administer` required to apply, and the deletion is itself audited)
 - [x] SEC-006 administrative separation of duties for model/tool approval (BRD §16) (enforced on the **actor**, checked against the recorded disabler rather than trusted from the request: the principal who switched a model or tool off may not be the one who turns it back on. Deliberately asymmetric - *disabling* needs no second pair of eyes, because switching something off is the safe direction and gating it is how an incident gets longer; *re-enabling* restores capability, so that is what a second principal must do. Configurable, and inert when RBAC is off)
 - [x] SEC-007 immediate disable of a model, tool or integration (BRD §16) (`ControlPlane`: a small file the enforcement points re-read **per call**, so a disable takes effect on the next call with no policy edit, no reload and no restart - the policy file is the right instrument for a standing rule and the wrong one for an incident. It only ever subtracts: "enable" undoes a disable made here and can never grant what policy withholds, so the control plane is not a way around the policy file. Writes are atomic, and a corrupt control file **raises** rather than being read as "nothing is disabled", because the failure mode of guessing is that something switched off during an incident quietly comes back. `aica admin`, `GET|POST /admin/controls`)
-- [ ] NFR-003 concurrency-aware behavior for multi-user/multi-repository sessions (BRD §8)
+- [x] NFR-003 concurrency-aware behavior for multi-user/multi-repository sessions (BRD §8) (the BRD names the behaviour but no rule, so the rules were derived from the hazard - two agents in one working tree - and recorded as Entry 028. **Repository lease** (`aica.workspace.lease`): an agent task holds a file lease on its working tree for its run, so the CLI and a server in different processes see each other; a second task is **refused** (CLI exit 7, HTTP 409) naming who holds it and until when, never queued against a tree that will have changed. **Mutating tool calls from outside the holder are refused** in `Tool.invoke` and audited, so `POST /files` cannot edit mid-run; read-only calls are unaffected. Other repositories - including a second worktree or clone of the same one - have their own lease, which is the supported way to run agents in parallel. The lease expires at the run budget (AG-007) plus grace, a stale lease is taken over under an exclusive takeover lock (12-thread races: exactly one winner), an unreadable lease reads as busy, and breaking a live one needs `administer` and is audited (`aica lease [--break]`, `GET /admin/lease`, `POST /admin/lease/break`). **Sessions**: saves are atomic and carry a revision, so a stale copy is refused (`SessionConflict`, 409 / exit 7) instead of discarding another writer's turns; long-running writers apply their result to the latest copy with `SessionStore.update`. **Ownership**: new sessions record their owner, and with RBAC on a peer cannot open another principal's session (an admin can). Older session files without revision/owner still load)
 - [x] NFR-004 material actions attributable to user/session/agent/tool (`AuditEvent` has carried actor, session, agent, tool and model since Phase 0; ADM-007's search and ADM-006's reporting are what make that attribution *usable* rather than merely recorded, and a CLI test asserts actor/session appear against each event)(BRD §17 Auditability)
 
 ## Phase 5 — Fine-Tuning / Adaptation
@@ -281,6 +281,26 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### Phase 4 — concurrency (NFR-003) — 2026-09-25
+- New `src/aica/workspace/lease.py`; `ToolContext.lease_holder` and the mutating-call
+  check in `Tool.invoke`; `Session.revision/owner/check_access`, atomic
+  `SessionStore.save`, `SessionStore.update`; lease taken by `aica task` and
+  `POST /sessions/{id}/tasks`; `aica lease`, `GET /admin/lease`, `POST /admin/lease/break`.
+- Checks: ruff/format clean, mypy strict 0 issues (88 files), `pytest` **996 passed,
+  2 skipped** (live model and PostgreSQL, env-gated), 90% coverage; `tests/test_concurrency.py`
+  29 tests. The race tests were re-run 15 times with unhandled-thread warnings as errors: clean.
+- Real multi-process run: a lease taken by a separate Python process was reported by a live
+  `aica serve` and by `aica lease`; `POST /files` was refused 409 and wrote nothing; after
+  `POST /admin/lease/break` the same write returned 200.
+- Bugs found while testing: (1) `SessionStore.update` read outside the save lock, so eight
+  writers in one process livelocked and gave up - now read-change-save is one critical
+  section; (2) on Windows, deleting a stale lease while another thread read it raised
+  `WinError 32` and crashed the taker - sharing violations are now retried briefly and a
+  persistent one reads as *busy*, never free; (3) `GET /admin/lease` published the holder id,
+  which is the capability to write through the lease - now omitted from every surface.
+- Unresolved: an HTTP server serves one workspace, so "multi-repository" means one server
+  (or CLI) per checkout; a single server fronting several repositories is not built.
 
 ### Phase 4 — approval queue (API-014, UX-008) — 2026-09-25
 - New `src/aica/admin/approval_queue.py` (`ApprovalQueue`, `PendingApproval`,
