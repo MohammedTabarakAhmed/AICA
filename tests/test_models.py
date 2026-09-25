@@ -202,7 +202,20 @@ def test_repo_models_file_is_valid() -> None:
     assert gw.default_name() == "deepseek-chat"
     assert "deepseek-chat" in names  # MM-007 DeepSeek is first-class
     assert "glm-4.7-flash" in names  # MM-005 GLM, approved 2026-09-25
+    assert "qwen2.5-coder-7b" in names  # local Ollama, approved 2026-09-25
     assert "kimi" not in names  # disabled until approved
+
+
+def test_a_model_without_a_key_sends_no_authorization_header() -> None:
+    """A local server (Ollama) takes no credential; the adapter must not invent one."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "42"}}]})
+
+    assert _adapter(handler).chat([ChatMessage(role="user", content="x")]).content == "42"
+    assert "authorization" not in {k.lower() for k in seen[0].headers}
 
 
 def test_scripted_adapter_embeddings_are_normalized() -> None:

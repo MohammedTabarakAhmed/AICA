@@ -53,6 +53,96 @@ notes = "Z.ai free tier"
 [models.extra_body]
 thinking = { type = "disabled" }
 
+# Gemini and Groq free tiers, approved by the project owner on 2026-09-25. Model ids are from
+# the providers' own model and pricing pages on that date: gemini-3.8-flash is Google's newest
+# stable free model; on Groq, gpt-oss-120b is the strongest coding model and the
+# second model is qwen3.8 (see below). Keys come from GEMINI_API_KEY and
+# GROQ_API_KEY; the hosts are listed in config/policy.toml.
+#
+# Gemini 3 thinking cannot be turned off, only lowered, and like GLM the thinking counts against
+# max_tokens, so it is set to the lowest level the OpenAI-compatible endpoint accepts.
+[[models]]
+name = "gemini-3.8-flash"
+provider = "openai_compatible"
+family = "gemini"
+version = "gemini-3.8-flash"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+context_window = 1048576
+capabilities = ["chat", "streaming", "tools"]
+timeout_seconds = 120.0
+max_retries = 3
+status = "approved"
+enabled = true
+notes = "Google AI Studio free tier"
+
+[models.extra_body]
+reasoning_effort = "low"
+
+# gpt-oss is a reasoning model and "low" is the least Groq accepts: with max_tokens=16 all 16
+# tokens went to reasoning (finish_reason=length, empty answer). Give it a real budget.
+[[models]]
+name = "groq-gpt-oss-120b"
+provider = "openai_compatible"
+family = "gpt-oss"
+version = "openai/gpt-oss-120b"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+context_window = 131072
+capabilities = ["chat", "streaming", "tools"]
+timeout_seconds = 120.0
+max_retries = 3
+status = "approved"
+enabled = true
+notes = "Groq free tier"
+
+[models.extra_body]
+reasoning_effort = "low"
+
+# Groq's docs still listed llama-3.3-70b-versatile on 2026-09-25, but the account's /models
+# did not, and a call answered 404 model_not_found. qwen3.8 is what the account serves besides
+# gpt-oss; unlike gpt-oss its reasoning can be switched off, measured the same day.
+[[models]]
+name = "groq-qwen3.8-27b"
+provider = "openai_compatible"
+family = "qwen"
+version = "qwen/qwen3.8-27b"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+context_window = 131072
+capabilities = ["chat", "streaming", "tools"]
+timeout_seconds = 120.0
+max_retries = 3
+status = "approved"
+enabled = true
+notes = "Groq free tier"
+
+[models.extra_body]
+reasoning_effort = "none"
+
+# A local model through Ollama, approved by the project owner on 2026-09-25. It needs no key
+# and does not leave the machine, so it keeps work possible when the free tier is overloaded
+# and makes "the same task on a second model" a real comparison (EVAL-006).
+#
+# context_window is what Ollama *serves*, not what the weights support: qwen2.5-coder takes
+# 32768 tokens, but Ollama loads it with 4096 unless the server sets OLLAMA_CONTEXT_LENGTH,
+# and it truncates a longer prompt silently instead of failing. Declaring 32768 here would let
+# the router send planning and review work that the model never sees in full. Raise both
+# together. Measured with /api/ps on 2026-09-25 (Ollama 0.34.0, CPU only, digest dae161e27b0e).
+[[models]]
+name = "qwen2.5-coder-7b"
+provider = "openai_compatible"
+family = "qwen"
+version = "qwen2.5-coder:7b"
+base_url = "http://127.0.0.1:11434/v1"
+context_window = 4096
+capabilities = ["chat", "streaming", "tools"]
+# CPU inference: a first call includes loading 4.7 GB of weights.
+timeout_seconds = 300.0
+status = "approved"
+enabled = true
+notes = "local Ollama, digest dae161e27b0e"
+
 [[models]]
 name = "kimi"
 provider = "openai_compatible"
@@ -72,9 +162,15 @@ notes = "not yet approved or deployed"
 # configuration change and not an agent-core change (MM-008).
 [routing]
 # Tried in order when the chosen model is unavailable - a 5xx, a timeout, a rate limit, or a
-# credential that is not configured here (MM-010). Kimi is disabled today, so in effect the
-# chain is GLM alone; the router records each candidate it skips and why.
-fallbacks = ["glm-4.7-flash", "kimi"]
+# credential that is not configured here (MM-010). Strongest free model first, and a second
+# provider before a second model of the same provider, so one provider's outage costs one step;
+# the local model is last because it is the weakest but needs no network. It is skipped for
+# planning and review, whose min_context it does not meet. Kimi is disabled today; the router
+# records each candidate it skips and why.
+fallbacks = [
+  "gemini-3.8-flash", "groq-gpt-oss-120b", "glm-4.7-flash", "groq-qwen3.8-27b",
+  "qwen2.5-coder-7b", "kimi",
+]
 
 [[routing.rules]]
 task = "completion"

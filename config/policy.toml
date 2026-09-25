@@ -19,7 +19,15 @@ environment = "development"
 # layer can be verified against a real provider (BRD Business Acceptance #1). The
 # credential itself is never stored here - config/models.toml names DEEPSEEK_API_KEY.
 mode = "allowlist"
-allowed_hosts = ["api.deepseek.com", "api.z.ai"]
+# 127.0.0.1 was added on 2026-09-25 for the local Ollama model (config/models.toml). It is
+# loopback, so nothing leaves the machine; it is listed rather than exempted because the model
+# gateway has no loopback exemption, and a model endpoint should be named where it is allowed.
+# api.groq.com and generativelanguage.googleapis.com were added on 2026-09-25 with the user's
+# authorization, for the Groq and Gemini free tiers.
+allowed_hosts = [
+  "api.deepseek.com", "api.z.ai", "127.0.0.1",
+  "api.groq.com", "generativelanguage.googleapis.com",
+]
 
 [approval]
 require_for = [
