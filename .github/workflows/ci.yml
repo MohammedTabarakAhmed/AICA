@@ -1,0 +1,93 @@
+# Continuous integration: the same gate as scripts/verify.* (ruff, format, mypy strict, pytest
+# with coverage), run on every push and pull request so a PR shows its own evidence instead of
+# relying on a report (TEST-009 prevention of false success).
+#
+# Linux also starts a throwaway PostgreSQL container so tests/integration/test_postgres.py runs
+# against a real server instead of skipping. Go, Rust and Maven come preinstalled on the GitHub
+# runners and JDK 21 / Node 24 are installed below, so the language integration tests run too.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.12" }  # the requires-python floor
+          - { os: ubuntu-latest, python: "3.14" }
+          - { os: windows-latest, python: "3.14" }  # the development platform
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # The Java fixture compiles with release 21; the runners default to JDK 17.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # The TypeScript tests run .ts directly, which needs Node >= 23; the runners ship 20.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,api,browser,postgres]"
+
+      - name: Install Chromium for Playwright (Linux)
+        if: runner.os == 'Linux'
+        run: python -m playwright install --with-deps chromium
+
+      - name: Install Chromium for Playwright (Windows)
+        if: runner.os == 'Windows'
+        run: python -m playwright install chromium
+
+      # A disposable CI-only database; the password is not a secret and guards nothing else.
+      - name: Start PostgreSQL (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          docker run -d --name aica-pg -e POSTGRES_PASSWORD=ci-only -e POSTGRES_DB=aica_test \
+            -p 55433:5432 postgres:17-alpine
+          for i in $(seq 1 30); do
+            docker exec aica-pg pg_isready -U postgres && break
+            sleep 1
+          done
+          echo "AICA_TEST_POSTGRES_DSN=postgresql://postgres@127.0.0.1:55433/aica_test" >> "$GITHUB_ENV"
+          echo "AICA_TEST_POSTGRES_PASSWORD=ci-only" >> "$GITHUB_ENV"
+
+      - name: Lint
+        run: python -m ruff check src tests
+
+      - name: Format
+        run: python -m ruff format --check src tests
+
+      - name: Type check
+        run: python -m mypy
+
+      - name: Tests
+        run: python -m pytest --cov=aica --cov-report=term-missing -rs
