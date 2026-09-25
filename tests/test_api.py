@@ -387,6 +387,12 @@ def test_a_destructive_command_is_refused_without_approval(
     )
     assert response.status_code == 409
     assert (workspace / "src").exists()
+    # API-014: the refusal is parked for a human, and nothing ran as a result of that.
+    pending = client.get("/approvals", headers=HEADERS).json()
+    assert pending["count"] == 1
+    entry = pending["approvals"][0]
+    assert entry["tool"] == "shell.run" and entry["id"] in response.json()["detail"]
+    assert (workspace / "src").exists()
 
 
 def test_a_path_outside_the_workspace_is_refused(client: TestClient) -> None:
@@ -444,13 +450,13 @@ def test_policy_is_visible(client: TestClient) -> None:
     assert body["network_mode"] == "deny"
 
 
-def test_approval_contract_is_documented(client: TestClient) -> None:
-    body = client.get("/approvals", headers=HEADERS).json()
-    assert "409" in body["contract"]
+def test_deciding_an_unknown_approval_is_409(client: TestClient) -> None:
+    """API-014: there is a real queue now, so an unknown id is refused, not 'recorded'."""
+    assert client.get("/approvals", headers=HEADERS).json()["count"] == 0
     decision = client.post(
         "/approvals/some-id", json={"approved": True, "note": "ok"}, headers=HEADERS
     )
-    assert decision.status_code == 200 and decision.json()["recorded"] is True
+    assert decision.status_code == 409
 
 
 def test_a_task_can_use_a_repository_tool(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -499,3 +505,189 @@ def test_a_task_can_use_a_repository_tool(workspace: Path, monkeypatch: pytest.M
         assert detail.get("error") is None
         # Both repository steps really ran on the worker thread.
         assert "[x] s1" in detail["plan"] and "[x] s2" in detail["plan"]
+
+
+# ---------------------------------------------------------------- API-012 / API-013
+
+
+REGISTRY = """
+default = "main"
+
+[[models]]
+name = "main"
+family = "deepseek"
+version = "main-20250101"
+base_url = "https://api.deepseek.com"
+context_window = 128000
+capabilities = ["chat", "streaming", "tools"]
+pinned = true
+
+[[models]]
+name = "reviewer"
+family = "glm"
+version = "reviewer-20250101"
+base_url = "https://api.deepseek.com"
+context_window = 200000
+capabilities = ["chat", "streaming"]
+
+[[models]]
+name = "waiting"
+family = "kimi"
+version = "waiting-1"
+base_url = "https://api.deepseek.com"
+capabilities = ["chat", "streaming"]
+status = "pending"
+notes = "not approved yet"
+
+[[routing.rules]]
+task = "review"
+model = "reviewer"
+
+[[routing.rules]]
+task = "planning"
+model = "main"
+"""
+
+
+@pytest.fixture
+def registry_client(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    """An app with a real multi-model registry; the adapters themselves stay scripted."""
+    from aica.models.fake import ScriptedAdapter
+    from aica.models.gateway import ModelGateway
+
+    monkeypatch.setattr(
+        ModelGateway, "get", lambda self, name=None: ScriptedAdapter([PLAN], name=str(name))
+    )
+    models_file = workspace / "config" / "models.toml"
+    models_file.write_text(REGISTRY, encoding="utf-8")
+    app = create_app(
+        ApiSettings(
+            workspace=workspace,
+            policy_file=str(workspace / "config" / "policy.toml"),
+            models_file=str(models_file),
+            token=TOKEN,
+        )
+    )
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_the_models_endpoint_reports_capabilities_status_and_routing(
+    registry_client: TestClient,
+) -> None:
+    """API-012/UX-007: enough to choose a model before starting, and to see why not."""
+    body = registry_client.get("/models", headers=HEADERS).json()
+    assert body["default"] == "main"
+    models = {m["name"]: m for m in body["models"]}
+    assert set(models) == {"main", "reviewer"}  # "waiting" is not usable, so not offered
+    assert models["main"]["version"] == "main-20250101"
+    assert models["main"]["pinned"] is True
+    assert models["main"]["capabilities"] == ["chat", "streaming", "tools"]
+    assert models["reviewer"]["context_window"] == 200000
+
+    routing = body["routing"]
+    assert {"task": "review", "model": "reviewer"}.items() <= routing["rules"][0].items()
+    # What each kind of work resolves to today - the question a UI actually needs answered.
+    assert routing["resolves_to"]["review"]["model"] == "reviewer"
+    assert routing["resolves_to"]["planning"]["model"] == "main"
+    assert routing["resolves_to"]["embeddings"]["model"] is None  # nothing can embed
+
+
+def test_a_model_awaiting_approval_is_shown_with_its_status_when_asked(
+    registry_client: TestClient,
+) -> None:
+    body = registry_client.get("/models?include_unusable=true", headers=HEADERS).json()
+    waiting = next(m for m in body["models"] if m["name"] == "waiting")
+    assert waiting["status"] == "pending" and waiting["usable"] is False
+
+
+def test_a_task_can_pin_the_model_by_name(registry_client: TestClient) -> None:
+    """API-013/MM-002: a named model is used as asked, and reported back exactly."""
+    session = create_session(registry_client)
+    response = registry_client.post(
+        f"/sessions/{session}/tasks",
+        json={"task": "read the invoice module", "model": "reviewer"},
+        headers=HEADERS,
+    )
+    assert response.status_code == 202, response.text
+    chosen = response.json()["model"]
+    assert chosen["name"] == "reviewer"
+    assert chosen["version"] == "reviewer-20250101"  # MM-012: the exact version
+    assert "requested by name" in chosen["reason"]
+
+
+def test_a_task_without_a_model_is_routed_by_the_kind_of_work(
+    registry_client: TestClient,
+) -> None:
+    """API-013/MM-004: the routing rules decide, and the answer says which rule applied."""
+    session = create_session(registry_client)
+    response = registry_client.post(
+        f"/sessions/{session}/tasks",
+        json={"task": "review the invoice module", "task_kind": "review"},
+        headers=HEADERS,
+    )
+    assert response.status_code == 202, response.text
+    chosen = response.json()["model"]
+    assert chosen["name"] == "reviewer"
+    assert chosen["task_kind"] == "review"
+    assert "routing rule" in chosen["reason"]
+
+    # The session now records what answered for it (MM-012).
+    detail = registry_client.get(f"/sessions/{session}", headers=HEADERS).json()
+    assert detail["model"] == "reviewer"
+
+
+def test_a_pinned_model_is_offered_no_fallback(registry_client: TestClient) -> None:
+    session = create_session(registry_client)
+    response = registry_client.post(
+        f"/sessions/{session}/tasks",
+        json={"task": "plan something", "model": "main"},
+        headers=HEADERS,
+    )
+    assert response.json()["model"]["fallbacks"] == []
+
+
+def test_asking_for_a_model_that_is_not_approved_is_refused(registry_client: TestClient) -> None:
+    session = create_session(registry_client)
+    response = registry_client.post(
+        f"/sessions/{session}/tasks",
+        json={"task": "do something", "model": "waiting"},
+        headers=HEADERS,
+    )
+    assert response.status_code == 503
+    assert "pending" in response.json()["detail"]
+
+
+def test_an_unknown_task_kind_is_rejected(registry_client: TestClient) -> None:
+    session = create_session(registry_client)
+    response = registry_client.post(
+        f"/sessions/{session}/tasks",
+        json={"task": "do something", "task_kind": "telepathy"},
+        headers=HEADERS,
+    )
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------- INT-003 web application
+
+
+def test_the_web_app_is_served_with_a_strict_content_security_policy(client: TestClient) -> None:
+    """The page's files are public (they hold no data); everything it fetches needs a token."""
+    root = client.get("/", follow_redirects=False)
+    assert root.status_code in (302, 307) and root.headers["location"] == "/ui/"
+    page = client.get("/ui/")
+    assert page.status_code == 200 and "<title>AICA</title>" in page.text
+    csp = page.headers["content-security-policy"]
+    assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
+    assert "unsafe-inline" not in csp
+    assert page.headers["x-frame-options"] == "DENY"
+    assert client.get("/ui/app.js").status_code == 200
+    # The page itself embeds nothing from the workspace.
+    assert "invoice" not in page.text
+    assert client.get("/sessions").status_code == 401
+
+
+def test_every_response_carries_baseline_security_headers(client: TestClient) -> None:
+    response = client.get("/health")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"

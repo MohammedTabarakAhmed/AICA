@@ -10,6 +10,7 @@ from aica.policy.models import (
     NetworkMode,
     NetworkPolicy,
     Policy,
+    ToolPolicy,
 )
 
 __all__ = [
@@ -28,5 +29,6 @@ __all__ = [
     "Policy",
     "PolicyLoadError",
     "RunBudget",
+    "ToolPolicy",
     "load_policy",
 ]

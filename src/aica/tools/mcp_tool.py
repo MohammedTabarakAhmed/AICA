@@ -50,6 +50,10 @@ class MCPTool(Tool):
     """One remote tool, presented as a local tool."""
 
     name: ClassVar[str] = ""  # set per instance below
+    # An MCP server is external code with unknown side effects, so every MCP tool is
+    # treated as mutating for the production gate (SEC-001). A read-only MCP tool pays
+    # one approval; assuming the opposite would let an unknown write through unasked.
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = ""
     Args: ClassVar[type[BaseModel]]
 

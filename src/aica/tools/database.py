@@ -327,6 +327,7 @@ class DatabaseExplain(Tool):
 
 class DatabaseExecute(Tool):
     name: ClassVar[str] = "db.execute"
+    mutating: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Run a statement that changes data or schema. Requires a writable connection and "
         "approval; destructive statements (DROP, TRUNCATE, unqualified DELETE/UPDATE) "

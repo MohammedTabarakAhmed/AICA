@@ -219,7 +219,8 @@ _DECL = re.compile(
     r")"
 )
 _IMPORT = re.compile(
-    r'^\s*(?:import\s+(?:[\w.*{}\s,]+\s+from\s+)?["\']?([\w./@-]+)|use\s+([\w:]+)|require\(["\']([\w./@-]+))',
+    # ":" in the module name keeps "node:test" whole instead of truncating it to "node".
+    r'^\s*(?:import\s+(?:[\w.*{}\s,]+\s+from\s+)?["\']?([\w./@:-]+)|use\s+([\w:]+)|require\(["\']([\w./@:-]+))',
     re.M,
 )
 
