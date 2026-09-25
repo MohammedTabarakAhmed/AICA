@@ -27,10 +27,11 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from aica.admin.approval_queue import ApprovalError, ApprovalQueue, QueueingApprover
@@ -46,7 +47,7 @@ from aica.admin.reporting import (
 )
 from aica.admin.reporting import search as audit_search
 from aica.agent.loop import STATE_KEY, AgentLoop, AgentState
-from aica.api.tasks import TaskManager, event_payload
+from aica.api.tasks import TaskManager, TaskRecord, event_payload
 from aica.approvals import (
     AllowAllApprover,
     ApprovalRequest,
@@ -63,12 +64,21 @@ from aica.policy import Policy, load_policy
 from aica.policy.budget import RunBudget
 from aica.policy.models import ActionCategory
 from aica.rag.index import RepositoryIndex
+from aica.review.acceptance import (
+    ChangedSinceTask,
+    fingerprint,
+    hunks,
+    merge,
+    require_unchanged,
+)
 from aica.review.reviewer import DEFAULT_CHECKS, CodeReviewer, ReviewCheck, ReviewRequest
 from aica.tools import ToolContext, default_registry
 from aica.tools.base import ToolArgumentError, ToolError, ToolNotAllowed
+from aica.web import CONTENT_SECURITY_POLICY, STATIC_DIR
 from aica.workspace import GitGuard, WorkspaceGuard
 from aica.workspace.lease import RepositoryBusy, RepositoryLease
 from aica.workspace.project_context import ProjectContextStore, project_conventions_block
+from aica.workspace.snapshots import SnapshotStore
 
 TOKEN_ENV = "AICA_API_TOKEN"  # noqa: S105 - the name of an environment variable, not a secret
 API_TITLE = "AICA"
@@ -179,6 +189,16 @@ class RetentionRequest(BaseModel):
     apply: bool = False  # a destructive default would be the wrong one
 
 
+class ChangeDecision(BaseModel):
+    """CC-005: keep all, none, or some hunks of the agent's edit to one file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=1000)
+    accept: Literal["all", "none"] | list[int]
+    note: str = Field(default="", max_length=1000)
+
+
 class ApprovalSubmission(BaseModel):
     """API-014: ask a human to decide an action. Recording it runs nothing."""
 
@@ -202,6 +222,13 @@ class ApprovalDecision(BaseModel):
 # ------------------------------------------------------------------ application
 
 
+def _read_optional(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
 def create_app(settings: ApiSettings) -> FastAPI:
     """Build the application. One workspace per server process."""
     manager = TaskManager()
@@ -218,6 +245,26 @@ def create_app(settings: ApiSettings) -> FastAPI:
     app.state.settings = settings
     app.state.manager = manager
     app.state.token = token
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next: Any) -> Any:
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        if request.url.path.startswith("/ui"):
+            # INT-003: the page may load only itself and talk only to this origin.
+            response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    # INT-003. The web application's files are public - they are the same for everyone and
+    # hold no data - and every request the page then makes needs the bearer token.
+    app.mount("/ui", StaticFiles(directory=STATIC_DIR, html=True), name="ui")
+
+    @app.get("/", include_in_schema=False)
+    def root() -> RedirectResponse:
+        return RedirectResponse(url="/ui/")
 
     @app.exception_handler(SessionConflict)
     def session_conflict(_: Request, exc: SessionConflict) -> JSONResponse:
@@ -562,6 +609,150 @@ def create_app(settings: ApiSettings) -> FastAPI:
         return run_task(
             record.session_id, RunTaskRequest(task=record.task, resume=True, auto_approve=False)
         )
+
+    # ------------------------------------------------------------------ CC-005
+    def _task_changes(record: TaskRecord) -> list[dict[str, Any]]:
+        """Each changed file once: its action, pre-task snapshot and current state."""
+        report = record.report
+        if report is None:
+            return []
+        root = settings.workspace.resolve()
+        snapshots = SnapshotStore(root)
+        seen: dict[str, dict[str, Any]] = {}
+        for change in report.changes:
+            entry = seen.get(change.path)
+            if entry is None:
+                entry = seen[change.path] = {
+                    "path": change.path,
+                    "actions": [],
+                    "snapshot_id": change.snapshot_id,  # the first one holds the original
+                    "diff": "",
+                }
+            entry["actions"].append(change.action)
+            entry["diff"] += change.diff
+        out: list[dict[str, Any]] = []
+        for path, entry in seen.items():
+            current = _read_optional(root / path)
+            original: str | None = None
+            if entry["snapshot_id"]:
+                try:
+                    original = snapshots.original_text(entry["snapshot_id"], path)
+                except (KeyError, OSError):
+                    entry["snapshot_id"] = None
+            expected = record.final_fingerprints.get(path)
+            unchanged = expected is not None and fingerprint(current) == expected
+            file_hunks = (
+                [h.to_json() for h in hunks(original, current)]
+                if original is not None and current is not None
+                else None
+            )
+            entry.update(
+                {
+                    "action": "modified" if file_hunks is not None else entry["actions"][-1],
+                    "decision": record.decisions.get(path, "pending"),
+                    "unchanged_since_task": unchanged,
+                    "decidable": unchanged and entry["snapshot_id"] is not None,
+                    "hunks": file_hunks,
+                }
+            )
+            out.append(entry)
+        return out
+
+    @app.get("/tasks/{task_id}/changes", dependencies=guard)
+    def task_changes(task_id: str) -> dict[str, Any]:
+        """CC-005/CHAT-007: the task's edits as decidable hunks, with each file's state."""
+        record = manager.get(task_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"unknown task {task_id}")
+        return {"task_id": task_id, "state": record.state.value, "files": _task_changes(record)}
+
+    @app.post("/tasks/{task_id}/changes/decide", dependencies=guard)
+    def decide_change(task_id: str, decision: ChangeDecision) -> dict[str, Any]:
+        """CC-005: accept, reject or partially accept one file's changes. Final once made.
+
+        Reject restores the pre-task snapshot through ``fs.rollback``; partial acceptance
+        writes the merged text through ``fs.write`` - so both are audited, snapshotted,
+        lease-checked (NFR-003) and permission-checked like any other write. The reviewer
+        pressing the button is the approval for overwriting the agent's uncommitted edit,
+        so that one call is approved; the approve permission (ADM-001) is still required.
+        """
+        record = manager.get(task_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"unknown task {task_id}")
+        if record.active:
+            raise HTTPException(status_code=409, detail="the task is still running")
+        files = {f["path"]: f for f in _task_changes(record)}
+        entry = files.get(decision.path)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"{decision.path} was not changed")
+        if entry["decision"] != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"{decision.path} was already {entry['decision']}; a decision is final",
+            )
+        root = settings.workspace.resolve()
+        outcome = "accepted"
+        ctx, index = build_context(record.session_id, auto_approve=True)
+        try:
+            if decision.accept != "all":
+                require_unchanged(
+                    decision.path,
+                    _read_optional(root / decision.path),
+                    record.final_fingerprints.get(decision.path, ""),
+                )
+                if not entry["snapshot_id"]:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"{decision.path} has no pre-task snapshot to restore from",
+                    )
+                if decision.accept == "none":
+                    default_registry().call(
+                        "fs.rollback",
+                        {"snapshot_id": entry["snapshot_id"], "path": decision.path},
+                        ctx,
+                    )
+                    outcome = "rejected"
+                else:
+                    original = SnapshotStore(root).original_text(
+                        entry["snapshot_id"], decision.path
+                    )
+                    current = _read_optional(root / decision.path)
+                    if original is None or current is None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"{decision.path} was {entry['action']}; only the whole "
+                            "file can be accepted or rejected",
+                        )
+                    merged = merge(original, current, set(decision.accept))
+                    default_registry().call(
+                        "fs.write",
+                        {"path": decision.path, "content": merged, "allow_dirty": True},
+                        ctx,
+                    )
+                    outcome = "partial"
+        except ChangedSinceTask as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RepositoryBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ToolNotAllowed, PermissionError) as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        finally:
+            index.close()
+        record.decisions[decision.path] = outcome
+        ctx.audit.record(
+            category=EventCategory.APPROVAL,
+            action=f"change decision on {decision.path}: {outcome}",
+            outcome=Outcome.SUCCESS,
+            details={
+                "rule": "CC-005",
+                "task_id": task_id,
+                "accepted_hunks": decision.accept,
+                "note": decision.note,
+            },
+        )
+        return {"task_id": task_id, "path": decision.path, "decision": outcome}
 
     # ------------------------------------------------------------------ models
     @app.get("/models", dependencies=guard)
@@ -1021,6 +1212,7 @@ def create_app(settings: ApiSettings) -> FastAPI:
         policy = load_policy(settings.policy_file)
         return {
             "version": policy.version,
+            "actor": settings.actor,
             "environment": policy.autonomy.environment.value,
             "max_steps": policy.autonomy.max_steps,
             "max_seconds": policy.autonomy.max_seconds,

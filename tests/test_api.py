@@ -666,3 +666,28 @@ def test_an_unknown_task_kind_is_rejected(registry_client: TestClient) -> None:
         headers=HEADERS,
     )
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------- INT-003 web application
+
+
+def test_the_web_app_is_served_with_a_strict_content_security_policy(client: TestClient) -> None:
+    """The page's files are public (they hold no data); everything it fetches needs a token."""
+    root = client.get("/", follow_redirects=False)
+    assert root.status_code in (302, 307) and root.headers["location"] == "/ui/"
+    page = client.get("/ui/")
+    assert page.status_code == 200 and "<title>AICA</title>" in page.text
+    csp = page.headers["content-security-policy"]
+    assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
+    assert "unsafe-inline" not in csp
+    assert page.headers["x-frame-options"] == "DENY"
+    assert client.get("/ui/app.js").status_code == 200
+    # The page itself embeds nothing from the workspace.
+    assert "invoice" not in page.text
+    assert client.get("/sessions").status_code == 401
+
+
+def test_every_response_carries_baseline_security_headers(client: TestClient) -> None:
+    response = client.get("/health")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
