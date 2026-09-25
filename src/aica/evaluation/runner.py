@@ -126,6 +126,7 @@ class Evaluator:
             passed=False,
             duration_ms=0,
             expect_failure=task.expect_failure,
+            tags=list(task.tags),
         )
         task.materialize(root)
         context, index = self._context(root)

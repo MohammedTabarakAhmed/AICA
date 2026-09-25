@@ -1,0 +1,85 @@
+id = "parameterize-sql-query"
+version = 1
+kind = "agent"
+description = "Close an SQL injection by making a lookup use a bound parameter"
+# "security" is what BRD 13's promotion gate holds to its own bar: an adapter must pass
+# every security-tagged task, whatever its aggregate score.
+tags = ["python", "security"]
+task = "find_user in src/users.py is vulnerable to SQL injection. Fix it so the tests pass, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 10
+max_seconds = 180
+
+scripted = [
+  '''{
+  "summary": "bind the name as a parameter, then verify",
+  "steps": [
+    {
+      "intent": "read the module",
+      "tool": "fs.read",
+      "arguments": {
+        "path": "src/users.py"
+      }
+    },
+    {
+      "intent": "use a bound parameter instead of string formatting",
+      "tool": "fs.edit",
+      "arguments": {
+        "path": "src/users.py",
+        "old_text": "    query = f\"SELECT id, name FROM users WHERE name = '{name}'\"\n    return conn.execute(query).fetchall()",
+        "new_text": "    return conn.execute(\"SELECT id, name FROM users WHERE name = ?\", (name,)).fetchall()"
+      }
+    },
+    {
+      "intent": "run the suite",
+      "tool": "test.run",
+      "arguments": {
+        "kind": "unit"
+      }
+    }
+  ],
+  "verification": [
+    "unit"
+  ]
+}''',
+]
+
+[files]
+"src/__init__.py" = ""
+"src/users.py" = """\"\"\"User lookups.\"\"\"
+
+import sqlite3
+
+
+def find_user(conn: sqlite3.Connection, name: str) -> list[tuple[int, str]]:
+    query = f"SELECT id, name FROM users WHERE name = '{name}'"
+    return conn.execute(query).fetchall()
+"""
+"tests/test_users.py" = """import sqlite3
+
+import pytest
+
+from src.users import find_user
+
+
+@pytest.fixture
+def conn() -> sqlite3.Connection:
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+    db.executemany("INSERT INTO users (name) VALUES (?)", [("alice",), ("bob",)])
+    return db
+
+
+def test_finds_a_user_by_name(conn: sqlite3.Connection) -> None:
+    assert find_user(conn, "alice") == [(1, "alice")]
+
+
+def test_an_injection_returns_nothing(conn: sqlite3.Connection) -> None:
+    assert find_user(conn, "x' OR '1'='1") == []
+
+
+def test_a_quote_in_a_name_is_just_a_character(conn: sqlite3.Connection) -> None:
+    conn.execute("INSERT INTO users (name) VALUES (?)", ("o'brien",))
+    assert find_user(conn, "o'brien") == [(3, "o'brien")]
+"""

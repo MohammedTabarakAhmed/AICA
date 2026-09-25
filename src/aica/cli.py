@@ -24,6 +24,7 @@ Commands:
   aica sessions [--resume ID]        session history (MEM-001/003)
   aica admin disable|enable|status   switch a tool/model/integration off now (SEC-007)
   aica approvals list|approve|reject pending approvals (API-014, UX-008)
+  aica adapt collect|approve|dataset|plan|register|evaluate|promote|rollback  (BRD 13)
   aica lease [--break]               agent-task lease on this repository (NFR-003)
   aica policy                        show the effective policy
   aica audit [--actor-filter A]      search the audit trail (ADM-007)
@@ -41,6 +42,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from aica import __version__
+from aica.adaptation.curation import (
+    AdaptationError,
+    CandidateState,
+    CandidateStore,
+    build_dataset,
+    list_datasets,
+)
+from aica.adaptation.registry import AdapterRegistry, CandidateSource
+from aica.adaptation.training import Method, TrainingConfig, plan_training
 from aica.admin.approval_queue import ApprovalError, ApprovalQueue
 from aica.admin.controls import ControlError, ControlPlane, TargetKind
 from aica.admin.quotas import report as quota_report
@@ -72,7 +82,7 @@ from aica.database.connections import DatabaseError, load_databases
 from aica.database.migrations import MigrationError, generate_migration
 from aica.mcp.config import MCPConfigError, load_mcp_config
 from aica.models.base import ModelError
-from aica.models.gateway import ModelGateway
+from aica.models.gateway import ActiveAdapterSource, ModelGateway
 from aica.models.routing import ModelRouter, TaskKind
 from aica.policy import load_policy
 from aica.policy.budget import RunBudget
@@ -96,6 +106,23 @@ from aica.workspace.project_context import (
 # Indexes opened during a CLI invocation, closed before main() returns so the SQLite
 # connections are not left dangling.
 _OPEN_INDEXES: list[RepositoryIndex] = []
+
+
+def _gateway(
+    args: argparse.Namespace, ctx: ToolContext, adapters: ActiveAdapterSource | None = None
+) -> ModelGateway:
+    """The one place the CLI builds a gateway, so every command sees the same controls.
+
+    SEC-007: a model disabled with ``aica admin disable model`` is refused here too, not
+    only over HTTP. BRD 13: a promoted adapter is applied, unless ``adapters`` names a
+    candidate being evaluated.
+    """
+    return ModelGateway.from_file(
+        ctx.policy.network,
+        getattr(args, "models_file", None),
+        controls=ctx.controls,
+        adapters=adapters or AdapterRegistry(ctx.workspace.root),
+    )
 
 
 def _context(args: argparse.Namespace) -> tuple[ToolContext, RepositoryIndex]:
@@ -140,7 +167,7 @@ def _adapter(  # type: ignore[no-untyped-def]
     chain is appended only when that model is not pinned. Without ``--model`` the routing
     rules in config/models.toml decide, and the choice is recorded in the audit log.
     """
-    gateway = ModelGateway.from_file(ctx.policy.network, getattr(args, "models_file", None))
+    gateway = _gateway(args, ctx)
     router = ModelRouter(
         gateway, gateway.routing, audit=ctx.audit, session_id=getattr(args, "session", None)
     )
@@ -1013,10 +1040,16 @@ def cmd_eval(args: argparse.Namespace) -> int:
     factory: ModelFactory = scripted_factory
     if not args.scripted:
         try:
-            gateway = ModelGateway.from_file(ctx.policy.network, getattr(args, "models_file", None))
+            under_test = (
+                CandidateSource(AdapterRegistry(ctx.workspace.root), args.adapter)
+                if args.adapter
+                else None
+            )
+            gateway = _gateway(args, ctx, under_test)
             router = ModelRouter(gateway, gateway.routing, audit=ctx.audit)
-            selection = router.select(TaskKind.PLANNING, requested=args.model)
-        except (ModelError, PermissionError) as exc:
+            requested = under_test.base_model if under_test else args.model
+            selection = router.select(TaskKind.PLANNING, requested=requested)
+        except (ModelError, PermissionError, AdaptationError) as exc:
             print(f"model unavailable: {exc}", file=sys.stderr)
             print("use --scripted to exercise the harness itself without a model", file=sys.stderr)
             return 3
@@ -1024,7 +1057,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         provenance = Provenance(
             model=selection.name,
             model_version=selection.version,
-            adapter=gateway.config_for(selection.name).adapter,
+            adapter=gateway.effective_config(selection.name).adapter,
         )
 
     report = Evaluator(policy=ctx.policy).run(suite, factory, provenance)
@@ -1043,7 +1076,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
 def cmd_models(args: argparse.Namespace) -> int:
     ctx, _ = _context(args)
-    gateway = ModelGateway.from_file(ctx.policy.network, getattr(args, "models_file", None))
+    gateway = _gateway(args, ctx)
     default = gateway.default_name()
     models = gateway.list_models()
     if not models:
@@ -1206,6 +1239,112 @@ def cmd_lease(args: argparse.Namespace) -> int:
     )
     print(f"broken: {broken.describe()}" if broken else "no lease to break")
     return 0
+
+
+def cmd_adapt(args: argparse.Namespace) -> int:
+    """BRD 13: collect, approve, build, plan, register, gate, promote and roll back."""
+    ctx, _ = _context(args)
+    root = ctx.workspace.root
+    policy = ctx.policy
+    who = ctx.actor
+    command = args.adapt_command
+    try:
+        if command == "collect":
+            counts = CandidateStore(root).collect(policy, who)
+            print(
+                f"found {counts['found']} run(s): {counts['new']} new, {counts['pending']} "
+                f"pending approval, {counts['excluded']} excluded by the screen"
+                + (f", {counts['unreadable']} unreadable" if counts["unreadable"] else "")
+            )
+            return 0
+        if command == "candidates":
+            rows = CandidateStore(root).all()
+            if args.state:
+                rows = [r for r in rows if r["state"] == args.state]
+            if not rows:
+                print("no training candidates")
+                return 0
+            for row in rows:
+                task = row["trajectory"]["task"][:70]
+                print(f"{row['id']}  {row['state']:<8}  {task}")
+                for reason in row["reasons"]:
+                    print(f"      - {reason}")
+            return 0
+        if command in ("approve", "decline"):
+            row = CandidateStore(root).decide(
+                args.id, who, command == "approve", " ".join(args.note or [])
+            )
+            print(f"{row['id']}: {row['state']} by {row['decided_by']}")
+            return 0
+        if command == "dataset":
+            manifest = build_dataset(root, policy, who)
+            print(f"dataset {manifest.version}: {manifest.examples} example(s), {manifest.format}")
+            for trajectory, reasons in manifest.excluded_at_build.items():
+                print(f"  excluded at build: {trajectory}: {'; '.join(reasons)}")
+            return 0
+        if command == "datasets":
+            for m in list_datasets(root):
+                print(f"{m.version}  {m.examples:>6} example(s)  {m.created_at}  by {m.created_by}")
+            return 0
+        if command == "plan":
+            config = TrainingConfig(
+                name=args.name,
+                base_model=args.base,
+                dataset=args.dataset,
+                method=Method(args.method),
+                epochs=args.epochs,
+                lora_rank=args.rank,
+            )
+            spec = plan_training(root, config, policy, _gateway(args, ctx), who)
+            print(json.dumps(spec, indent=2))
+            print(
+                f"\n[job spec {spec['config_version']} written; run it on your training "
+                "infrastructure, then `aica adapt register`]",
+                file=sys.stderr,
+            )
+            return 0
+        registry = AdapterRegistry(root)
+        if command == "register":
+            record = registry.register(args.job, args.serving_id, args.artifact, who)
+            print(f"registered {record['id']} on {record['base_model']}@{record['base_version']}")
+            return 0
+        if command == "evaluate":
+            record = registry.evaluate(args.id, args.report, who, baseline=args.baseline)
+            evaluation = record["evaluation"]
+            print(f"{record['id']}: {record['status']}")
+            for failure in evaluation["quality_failures"]:
+                print(f"  quality: {failure}")
+            for failure in evaluation["security_failures"]:
+                print(f"  security: {failure}")
+            return 0 if evaluation["passed"] else 2
+        if command == "promote":
+            record = registry.get(args.id)
+            current = _gateway(args, ctx).config_for(record["base_model"]).version
+            record = registry.promote(args.id, who, current)
+            print(
+                f"{record['id']} promoted: {record['base_model']} now serves {record['serving_id']}"
+            )
+            return 0
+        if command == "rollback":
+            restored = registry.rollback(args.base, who)
+            print(f"{args.base} now serves " + (restored or "the base model, with no adapter"))
+            return 0
+        # status
+        rows = registry.all()
+        if not rows:
+            print("no adapters registered")
+            return 0
+        for row in rows:
+            active = registry.active_for(row["base_model"])
+            mark = "*" if active is not None and active.adapter_id == row["id"] else " "
+            print(
+                f"{mark} {row['id']:<24} {row['status']:<12} {row['method']:<6} "
+                f"{row['base_model']}@{row['base_version']}  dataset {row['dataset_version']}"
+            )
+        return 0
+    except (AdaptationError, ModelError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
 
 
 def cmd_policy(args: argparse.Namespace) -> int:
@@ -1555,6 +1694,11 @@ def build_parser() -> argparse.ArgumentParser:
     ep.add_argument("--tag", action="append", help="run only tasks with this tag (repeatable)")
     ep.add_argument("--model", default=None, help="model to evaluate (default: routing policy)")
     ep.add_argument(
+        "--adapter",
+        default=None,
+        help="evaluate this registered adapter on its base model, before promotion (BRD 13)",
+    )
+    ep.add_argument(
         "--scripted",
         action="store_true",
         help="use each task's canned replies: exercises the harness, not a model",
@@ -1624,6 +1768,49 @@ def build_parser() -> argparse.ArgumentParser:
         ap.add_argument("id")
         ap.add_argument("--note", action="append")
         ap.set_defaults(func=cmd_approvals)
+
+    sp = sub.add_parser("adapt", help="fine-tuning data, adapters and promotion (BRD 13)")
+    adapt = sp.add_subparsers(dest="adapt_command", required=True)
+    ap = adapt.add_parser("collect", help="screen persisted agent runs into candidates")
+    ap.set_defaults(func=cmd_adapt)
+    ap = adapt.add_parser("candidates", help="list training candidates")
+    ap.add_argument("--state", choices=[c.value for c in CandidateState])
+    ap.set_defaults(func=cmd_adapt)
+    for verb in ("approve", "decline"):
+        ap = adapt.add_parser(verb, help=f"{verb} a candidate for training")
+        ap.add_argument("id")
+        ap.add_argument("--note", action="append")
+        ap.set_defaults(func=cmd_adapt)
+    ap = adapt.add_parser("dataset", help="build a versioned dataset from approved candidates")
+    ap.set_defaults(func=cmd_adapt)
+    ap = adapt.add_parser("datasets", help="list datasets")
+    ap.set_defaults(func=cmd_adapt)
+    ap = adapt.add_parser("plan", help="validate a training config and write its job spec")
+    ap.add_argument("--name", required=True)
+    ap.add_argument("--base", required=True, help="base model name from config/models.toml")
+    ap.add_argument("--dataset", required=True, help="dataset version")
+    ap.add_argument("--method", choices=[m.value for m in Method], default=Method.QLORA.value)
+    ap.add_argument("--epochs", type=int, default=3)
+    ap.add_argument("--rank", type=int, default=16)
+    ap.set_defaults(func=cmd_adapt)
+    ap = adapt.add_parser("register", help="record an adapter a trainer produced")
+    ap.add_argument("--job", required=True, help="job spec (config version)")
+    ap.add_argument("--serving-id", required=True, help="the id the endpoint serves it under")
+    ap.add_argument("--artifact", required=True, help="directory holding the adapter files")
+    ap.set_defaults(func=cmd_adapt)
+    ap = adapt.add_parser("evaluate", help="apply the quality and security gates")
+    ap.add_argument("id")
+    ap.add_argument("--report", required=True, help="`aica eval run --adapter ID --out` report")
+    ap.add_argument("--baseline", default=None, help="report of what is served today")
+    ap.set_defaults(func=cmd_adapt)
+    ap = adapt.add_parser("promote", help="serve an adapter that passed both gates")
+    ap.add_argument("id")
+    ap.set_defaults(func=cmd_adapt)
+    ap = adapt.add_parser("rollback", help="return a model to its previous adapter")
+    ap.add_argument("base", help="base model name")
+    ap.set_defaults(func=cmd_adapt)
+    ap = adapt.add_parser("status", help="registered adapters; * marks the one being served")
+    ap.set_defaults(func=cmd_adapt)
 
     sp = sub.add_parser("lease", help="which agent task holds this repository (NFR-003)")
     sp.add_argument(

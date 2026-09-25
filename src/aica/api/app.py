@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from aica.adaptation.registry import AdapterRegistry
 from aica.admin.approval_queue import ApprovalError, ApprovalQueue, QueueingApprover
 from aica.admin.controls import ControlError, ControlPlane, TargetKind
 from aica.admin.rbac import Permission
@@ -333,6 +334,7 @@ def create_app(settings: ApiSettings) -> FastAPI:
             policy.network,
             settings.models_file,
             controls=ControlPlane(settings.workspace.resolve(), actor=settings.actor),
+            adapters=AdapterRegistry(settings.workspace.resolve()),  # BRD 13
         )
 
     def select_model(
