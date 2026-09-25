@@ -26,21 +26,32 @@ timeout_seconds = 120.0
 status = "approved"
 enabled = true
 
-# GLM and Kimi are first-class families (MM-005, MM-006), configured and waiting on approval
-# and deployment rather than on code. They stay disabled until then, and the router skips a
-# disabled or unapproved entry instead of failing over to it.
+# GLM (MM-005) through Z.ai's international endpoint, approved by the project owner on
+# 2026-09-25. glm-4.7-flash is Z.ai's free tier, so it is also what serves work while no
+# DeepSeek key is configured: the router falls back to it (MM-010). Kimi is a first-class
+# family waiting on approval and deployment rather than on code, and stays disabled; the
+# router skips a disabled or unapproved entry instead of failing over to it.
 [[models]]
-name = "glm-4"
+name = "glm-4.7-flash"
 provider = "openai_compatible"
 family = "glm"
-version = "glm-4"
-base_url = "https://open.bigmodel.cn/api/paas/v4"
+version = "glm-4.7-flash"
+base_url = "https://api.z.ai/api/paas/v4"
 api_key_env = "GLM_API_KEY"
 context_window = 128000
 capabilities = ["chat", "streaming", "tools"]
-status = "pending"
-enabled = false
-notes = "not yet approved or deployed"
+timeout_seconds = 120.0
+# The free tier answers HTTP 429 code 1305 ("temporarily overloaded") under load; retry it a
+# few times before treating the model as unavailable.
+max_retries = 4
+status = "approved"
+enabled = true
+notes = "Z.ai free tier"
+
+# GLM-4.7 reasons before answering by default, and the reasoning counts against max_tokens:
+# with a small budget the visible answer comes back empty. Coding work here wants the answer.
+[models.extra_body]
+thinking = { type = "disabled" }
 
 [[models]]
 name = "kimi"
@@ -61,9 +72,9 @@ notes = "not yet approved or deployed"
 # configuration change and not an agent-core change (MM-008).
 [routing]
 # Tried in order when the chosen model is unavailable - a 5xx, a timeout, a rate limit, or a
-# credential that is not configured here (MM-010). Both are disabled today, so today this
-# chain is empty in effect; the router records each candidate it skips and why.
-fallbacks = ["glm-4", "kimi"]
+# credential that is not configured here (MM-010). Kimi is disabled today, so in effect the
+# chain is GLM alone; the router records each candidate it skips and why.
+fallbacks = ["glm-4.7-flash", "kimi"]
 
 [[routing.rules]]
 task = "completion"

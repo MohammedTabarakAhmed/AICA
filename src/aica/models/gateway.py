@@ -20,7 +20,7 @@ import os
 import re
 import tomllib
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 import httpx
@@ -54,6 +54,10 @@ class ModelConfig(BaseModel):
     )
     embedding_model: str | None = None
     timeout_seconds: float = Field(default=120.0, gt=0)
+    # Provider-specific request fields merged into every call (never model/messages/stream).
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+    # Bounded retries of 429/5xx/408 before this model counts as unavailable (MM-010).
+    max_retries: int = Field(default=0, ge=0, le=5)
     enabled: bool = True
     # MM-001: where this model stands with whoever approves models here.
     status: ModelStatus = ModelStatus.APPROVED
@@ -70,6 +74,12 @@ class ModelConfig(BaseModel):
             raise ValueError(
                 f"model {self.name!r} is pinned but its version {self.version!r} is a moving "
                 "alias; a pin has to name an exact served version to be reproducible (MM-011)"
+            )
+        reserved = {"model", "messages", "stream", "prompt", "suffix"} & set(self.extra_body)
+        if reserved:
+            raise ValueError(
+                f"model {self.name!r}: extra_body may not set {sorted(reserved)}; those are "
+                "the adapter's, so configuration cannot change what is called or sent"
             )
         if self.adapter and self.status is not ModelStatus.APPROVED:
             raise ValueError(
@@ -272,6 +282,8 @@ class ModelGateway:
                 api_key_env=cfg.api_key_env,
                 timeout_seconds=cfg.timeout_seconds,
                 embedding_model=cfg.embedding_model,
+                extra_body=cfg.extra_body,
+                max_retries=cfg.max_retries,
             ),
             cfg.info(),
             transport=self._transport,
