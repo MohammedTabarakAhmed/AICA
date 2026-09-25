@@ -387,6 +387,12 @@ def test_a_destructive_command_is_refused_without_approval(
     )
     assert response.status_code == 409
     assert (workspace / "src").exists()
+    # API-014: the refusal is parked for a human, and nothing ran as a result of that.
+    pending = client.get("/approvals", headers=HEADERS).json()
+    assert pending["count"] == 1
+    entry = pending["approvals"][0]
+    assert entry["tool"] == "shell.run" and entry["id"] in response.json()["detail"]
+    assert (workspace / "src").exists()
 
 
 def test_a_path_outside_the_workspace_is_refused(client: TestClient) -> None:
@@ -444,13 +450,13 @@ def test_policy_is_visible(client: TestClient) -> None:
     assert body["network_mode"] == "deny"
 
 
-def test_approval_contract_is_documented(client: TestClient) -> None:
-    body = client.get("/approvals", headers=HEADERS).json()
-    assert "409" in body["contract"]
+def test_deciding_an_unknown_approval_is_409(client: TestClient) -> None:
+    """API-014: there is a real queue now, so an unknown id is refused, not 'recorded'."""
+    assert client.get("/approvals", headers=HEADERS).json()["count"] == 0
     decision = client.post(
         "/approvals/some-id", json={"approved": True, "note": "ok"}, headers=HEADERS
     )
-    assert decision.status_code == 200 and decision.json()["recorded"] is True
+    assert decision.status_code == 409
 
 
 def test_a_task_can_use_a_repository_tool(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -190,10 +190,10 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] SAFE-007 prompt-injection defense (nonce-fenced untrusted content for retrieval and attachments; severity-ranked scanner; permissions never parsed from content)
 - [x] SAFE-008 emergency stop (`CancellationToken` checked before every tool call and enforced on running subprocesses)
 - [x] UX-007 model selection before execution with capability information (`aica models` prints each model's family, version, context window, capabilities, status, pin and adapter, plus the routing table; `GET /models` returns the same and additionally **which model each kind of work resolves to today** and why any candidate is unavailable. Graphical rendering belongs to the IDE/Web surfaces, Phase 4)
-- [ ] UX-008 approval requests displayed prominently
+- [x] UX-008 approval requests displayed prominently (`ConsoleApprover` interactively; `aica approvals list` under an `=== N APPROVAL REQUEST(S) ===` banner and `GET /approvals` `summaries`, each leading with the **categories** - the reason a human is being asked - then tool, action and requester. IDE/Web display waits on INT-001/003)
 - [x] API-012 list approved models and capabilities (`GET /models`, with `?include_unusable=true` to show entries that exist but may not be used together with the status that explains why - so a client shows "pending approval" instead of a model that silently is not there)
 - [x] API-013 select model: pin or policy-based routing (`POST /sessions/{id}/tasks` takes `model` to pin one by name or `task_kind` to let the routing policy choose; the 202 response returns the chosen name, the exact version, the reason and the fallback chain, and the session records what answered for it)
-- [ ] API-014 approval request/approve/reject (partial and deliberately so: `GET /approvals` publishes the contract and `POST /approvals/{id}` records an audited decision, but there is **no server-side pending queue** - an action needing approval is refused with 409 and the client re-sends it with `auto_approve`. A real queue needs identity and RBAC, which is ADM-001)
+- [x] API-014 approval request/approve/reject (`ApprovalQueue`, `.aica/admin/approvals.json`: `POST /approvals` records a request, `GET /approvals` lists pending (or `?include_decided=true`), `POST /approvals/{id}` decides; `aica approvals request|list|approve|reject`. An HTTP action refused for approval is now **parked in the queue** by `QueueingApprover` and the 409 names the request id, instead of the reason evaporating. The queue **holds records and never executes**: approving does not replay the action, the client re-sends it and it passes every gate again - a queue that ran things on approval would be a second execution path with different guards. Deciding needs the `approve` permission (ADM-001); the requester may not decide their own request (SEC-006 shape, checked against the recorded requester - and, like SEC-006, inert while RBAC is off, so a single-developer workspace can still decide its own); a decision is final; unanswered requests expire after 24h and cannot then be approved; an unreadable queue raises rather than reading as 'nothing pending'; writes are atomic and serialised across API worker threads)
 - [x] SEC-001 environment classification: development/test/production (BRD §16) (`Environment` on the policy, and it now **does** something: every tool declares `mutating`, and `Tool.invoke` puts any mutating call behind the PRODUCTION approval gate once the environment says production - so an ordinary `fs.write`, which was ungated in every environment before, is gated there. Read-only tools are not gated, or the classification would be unusable. `tools.deny_in_production` additionally withdraws named tools in that environment only. A test asserts the mutating/read-only split is complete, so a new write tool cannot silently escape the gate)
 - [x] SEC-002 tool allow/deny policies (BRD §16) (`ToolPolicy`: `deny` **always wins** - over `allow`, over the group allowlist, over everything - because switching a tool off must not depend on remembering every list that might turn it back on; `allow` narrows *within* the permitted groups and provably cannot widen them; patterns are an exact tool name, a group, or a prefix. Enforced in `ToolRegistry`, the same point every call already passes through, and denied tools are absent from the advertised tool list so a model is never offered a tool policy will refuse. `denial_reason` names which list refused, rather than a bare "not permitted")
 - [x] SEC-003 network destination policy for browser and execution tools (BRD §16) (the browser has enforced a destination allowlist since WEB-001; **execution had not** - a network command was classified EXTERNAL and sent to the approval gate, but nothing checked *where* it was going, so one approval let `curl` reach any host. `aica.safety.network` extracts destinations from URLs, scp/ssh targets and bare host arguments, and `shell.run` refuses a host outside `[network].allowed_hosts` **before** the approval gate, because approving "this talks to the network" was never approval of the destination. Only commands that actually invoke a network client are checked, loopback is allowed as the dev-server case, and a command whose host cannot be read (`git push`) keeps the gate it already had rather than being guessed at)
@@ -281,6 +281,25 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### Phase 4 — approval queue (API-014, UX-008) — 2026-09-25
+- New `src/aica/admin/approval_queue.py` (`ApprovalQueue`, `PendingApproval`,
+  `QueueingApprover`); surfaces `aica approvals` and `GET|POST /approvals`,
+  `POST /approvals/{id}`. The HTTP API's default approver is now `QueueingApprover`
+  (still always denies) instead of `DenyAllApprover`.
+- Checks: `ruff format` + `ruff check` clean, `mypy` strict 0 issues (87 files),
+  `pytest` **967 passed, 2 skipped** (live model and PostgreSQL, both env-gated),
+  90% total coverage, `approval_queue.py` 96%.
+- Real CLI run in a scratch workspace: request -> list -> approve -> re-decide refused
+  (exit 3, "a decision is final").
+- Found by that run: an action beginning with `-` (`rm -rf build`) was rejected by
+  argparse. Fixed by documenting the `--` separator in the help and adding a regression
+  test; `aica approvals request --tool shell.run -- rm -rf build` works.
+- `tests/test_api.py`: the old test asserting the stub "contract" replaced - an unknown id
+  is now a 409 - and the destructive-command 409 test now also asserts the refusal was
+  queued, names the id, and ran nothing.
+- Unresolved: an approved request is not bound to the re-sent action (the client still
+  re-sends with `auto_approve`); binding approval to a specific re-execution is a follow-up.
 
 ### Phase 3 step 3 — code review capability (REV-001..007) — 2026-09-24
 - New package `src/aica/review/`: `diff.py` (unified-diff parsing with post-image line
