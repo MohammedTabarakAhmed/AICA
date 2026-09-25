@@ -79,10 +79,10 @@ def test_discovers_node_scripts(tmp_path: Path) -> None:
 
 def test_discovers_go_rust_maven(tmp_path: Path) -> None:
     (tmp_path / "go.mod").write_text("module x\n", encoding="utf-8")
-    assert any(c.command == "go test ./..." for c in discover(tmp_path))
+    assert any(c.command == "go test -v ./..." for c in discover(tmp_path))
     (tmp_path / "go.mod").unlink()
     (tmp_path / "Cargo.toml").write_text("[package]\nname='x'\n", encoding="utf-8")
-    assert any(c.command == "cargo test" for c in discover(tmp_path))
+    assert any(c.command == "cargo test --no-fail-fast" for c in discover(tmp_path))
     (tmp_path / "Cargo.toml").unlink()
     (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
     assert any("mvn" in c.command for c in discover(tmp_path))
