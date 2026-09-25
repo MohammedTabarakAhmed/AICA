@@ -113,6 +113,16 @@ class ModelUnavailable(ModelError):
     """Raised when the provider cannot be reached or refuses (MM-010 fallback trigger)."""
 
 
+class EmptyAnswer(ModelError):
+    """The token budget ran out before any answer text: ``finish_reason=length``, no content.
+
+    Reasoning models (gpt-oss, GLM-4.7, Gemini 3) think before they answer and the thinking
+    counts against ``max_tokens``. Returning ``""`` would hand callers an empty answer as if
+    it were the model's reply (TEST-009). Not a fallback trigger: the model is available,
+    the request's budget was too small for it.
+    """
+
+
 class ModelAdapter(Protocol):
     @property
     def info(self) -> ModelInfo: ...

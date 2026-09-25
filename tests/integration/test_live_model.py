@@ -76,7 +76,9 @@ def test_a_real_chat_call_answers_and_reports_its_model(adapter) -> None:  # typ
             ChatMessage(role="user", content="What is 21 plus 21? Reply with the number only."),
         ],
         temperature=0.0,
-        max_tokens=16,
+        # 64, not 16: a reasoning model (gpt-oss, GLM-4.7, Gemini 3) thinks inside this budget
+        # before it answers, and 16 tokens left gpt-oss nothing to answer with.
+        max_tokens=64,
     )
     assert "42" in response.content
     assert response.model, "the served model id must be recorded (MM-012)"

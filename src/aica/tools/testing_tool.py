@@ -80,6 +80,20 @@ class RunTests(Tool):
         if result.data.get("timed_out"):
             outcome.status = CheckStatus.ERROR
         analysis = analyze_failures(outcome)
+        if not outcome.ok and outcome.passed + outcome.failed + outcome.skipped == 0:
+            # TEST-005. Nothing ran, so there are no failures to analyse, and "0 passed,
+            # 0 failed" alone hides why - found live, where "No module named pytest" was
+            # dropped and the model guessed at a cause. The command's own words are the
+            # evidence; the discovered command is the likely fix when the model chose its own.
+            tail = outcome.output_tail.strip()[-1500:] or "(no output)"
+            analysis = f"No tests ran. The command's output ends with:\n{tail}"
+            if args.command:
+                discovered = commands_for(ctx.workspace.root, [args.kind])
+                if discovered and discovered[0].command != command:
+                    analysis += (
+                        f"\n\nThe discovered {args.kind} command for this project is "
+                        f"`{discovered[0].command}`; omit `command` to use it."
+                    )
         return ToolResult(
             ok=outcome.ok,
             output=outcome.summary() + ("\n\n" + analysis if not outcome.ok else ""),

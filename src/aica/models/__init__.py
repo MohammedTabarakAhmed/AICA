@@ -1,6 +1,7 @@
 from aica.models.base import (
     Capability,
     ChatMessage,
+    EmptyAnswer,
     ModelAdapter,
     ModelError,
     ModelInfo,
@@ -34,6 +35,7 @@ __all__ = [
     "Capability",
     "FallbackAdapter",
     "ChatMessage",
+    "EmptyAnswer",
     "ModelAdapter",
     "ModelConfig",
     "ModelError",

@@ -22,6 +22,7 @@ import httpx
 from aica.models.base import (
     Capability,
     ChatMessage,
+    EmptyAnswer,
     ModelError,
     ModelInfo,
     ModelResponse,
@@ -127,6 +128,14 @@ class OpenAICompatibleAdapter:
                 )
             return resp
 
+    def _budget_spent(self, max_tokens: int | None) -> str:
+        budget = f"{max_tokens} tokens" if max_tokens else "the provider's default"
+        return (
+            f"{self._info.name}: the answer budget ({budget}) ran out before any answer text "
+            "(finish_reason=length); a reasoning model spends it thinking first - raise "
+            "max_tokens or lower reasoning_effort"
+        )
+
     @staticmethod
     def _error_text(resp: httpx.Response) -> str:
         """The provider's own explanation, redacted and short: "HTTP 429" alone cannot tell
@@ -177,8 +186,11 @@ class OpenAICompatibleAdapter:
         try:
             choice = data["choices"][0]
             usage = data.get("usage") or {}
+            content = choice["message"].get("content") or ""
+            if not content.strip() and choice.get("finish_reason") == "length":
+                raise EmptyAnswer(self._budget_spent(max_tokens))
             return ModelResponse(
-                content=choice["message"].get("content") or "",
+                content=content,
                 model=str(data.get("model") or self._config.model),
                 finish_reason=choice.get("finish_reason"),
                 usage=Usage(
@@ -206,6 +218,7 @@ class OpenAICompatibleAdapter:
             payload["max_tokens"] = max_tokens
         resp = self._post("/chat/completions", payload, stream=True)
         model = self._config.model
+        answered = False
         try:
             for line in resp.iter_lines():
                 if not line.startswith("data:"):
@@ -221,6 +234,9 @@ class OpenAICompatibleAdapter:
                 for choice in data.get("choices", []):
                     delta = (choice.get("delta") or {}).get("content") or ""
                     finish = choice.get("finish_reason")
+                    answered = answered or bool(delta.strip())
+                    if finish == "length" and not answered:
+                        raise EmptyAnswer(self._budget_spent(max_tokens))
                     if delta or finish:
                         yield StreamChunk(
                             delta=delta, model=model, finish_reason=finish, done=bool(finish)

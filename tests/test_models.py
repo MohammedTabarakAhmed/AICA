@@ -206,6 +206,66 @@ def test_repo_models_file_is_valid() -> None:
     assert "kimi" not in names  # disabled until approved
 
 
+def _reply(content: str | None, finish: str):  # type: ignore[no-untyped-def]
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}, "finish_reason": finish}]},
+        )
+
+    return handler
+
+
+def test_a_budget_spent_before_any_answer_is_an_error_not_an_empty_answer() -> None:
+    """Found live on Groq gpt-oss: max_tokens=16 all went to reasoning and the adapter handed
+    back "" as though the model had answered nothing (TEST-009)."""
+    from aica.models import EmptyAnswer
+
+    for content in ("", None, "  \n"):
+        with pytest.raises(EmptyAnswer, match="16 tokens.*finish_reason=length"):
+            _adapter(_reply(content, "length")).chat(
+                [ChatMessage(role="user", content="x")], max_tokens=16
+            )
+    # Not a fallback trigger: the model answered; the request's budget was too small.
+    assert not issubclass(EmptyAnswer, ModelUnavailable)
+
+
+def test_a_truncated_answer_or_a_deliberately_empty_one_is_still_returned() -> None:
+    """Only "nothing, because the budget ran out" is an error; text cut short is still text."""
+    cut = _adapter(_reply("the answer is 4", "length")).chat(
+        [ChatMessage(role="user", content="x")]
+    )
+    assert cut.content == "the answer is 4" and cut.finish_reason == "length"
+    empty = _adapter(_reply("", "stop")).chat([ChatMessage(role="user", content="x")])
+    assert empty.content == "" and empty.finish_reason == "stop"
+
+
+def test_a_stream_that_runs_out_before_any_answer_raises() -> None:
+    from aica.models import EmptyAnswer
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            'data: {"model":"m","choices":[{"delta":{"reasoning":"thinking..."}}]}\n\n'
+            'data: {"model":"m","choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=body, headers={"Content-Type": "text/event-stream"})
+
+    with pytest.raises(EmptyAnswer):
+        list(_adapter(handler).stream([ChatMessage(role="user", content="x")], max_tokens=8))
+
+    def partial(request: httpx.Request) -> httpx.Response:
+        body = (
+            'data: {"model":"m","choices":[{"delta":{"content":"1 2 3"}}]}\n\n'
+            'data: {"model":"m","choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=body, headers={"Content-Type": "text/event-stream"})
+
+    chunks = list(_adapter(partial).stream([ChatMessage(role="user", content="x")]))
+    assert "".join(c.delta for c in chunks) == "1 2 3"
+
+
 def test_a_model_without_a_key_sends_no_authorization_header() -> None:
     """A local server (Ollama) takes no credential; the adapter must not invent one."""
     seen: list[httpx.Request] = []
