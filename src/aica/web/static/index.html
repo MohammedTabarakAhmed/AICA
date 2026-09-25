@@ -40,6 +40,7 @@
       <ul id="sessions" class="list"></ul>
       <div class="sidebar-nav">
         <button data-view="task" class="nav active">Tasks</button>
+        <button data-view="review" class="nav">Review</button>
         <button data-view="approvals" class="nav">Approvals <span id="approvals-count"></span></button>
         <button data-view="models" class="nav">Models</button>
       </div>
@@ -108,6 +109,48 @@
               </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- CHAT-007 / REV-001..007: a review rendered as findings, not as a blob of text. -->
+      <section id="view-review" class="view" hidden>
+        <form id="review-form" class="card">
+          <h3>Review a change</h3>
+          <p class="muted">Read-only: nothing is edited, staged or committed. Leave the diff
+            empty to review the working tree, including new files.</p>
+          <label for="review-diff">Diff (optional)</label>
+          <textarea id="review-diff" rows="4" placeholder="Paste a unified diff, or leave empty"></textarea>
+          <div class="row">
+            <label>Compare with <input id="review-base" type="text" placeholder="e.g. main"></label>
+            <label>Only this path <input id="review-path" type="text" placeholder="e.g. src/"></label>
+            <label class="inline"><input id="review-staged" type="checkbox"> Staged changes only</label>
+          </div>
+          <fieldset class="checks">
+            <legend>Checks</legend>
+            <label class="inline"><input type="checkbox" name="review-check" value="correctness" checked> Correctness and bugs</label>
+            <label class="inline"><input type="checkbox" name="review-check" value="conventions" checked> Conventions</label>
+            <label class="inline"><input type="checkbox" name="review-check" value="tests" checked> Test adequacy</label>
+            <label class="inline"><input type="checkbox" name="review-check" value="security" checked> Security</label>
+          </fieldset>
+          <div class="row">
+            <label class="grow">Focus (optional) <input id="review-focus" type="text" placeholder="Anything the reviewer should look at closely"></label>
+            <button type="submit" class="primary">Run review</button>
+          </div>
+          <p id="review-error" class="error" role="alert"></p>
+        </form>
+
+        <div id="review-result" class="card" hidden>
+          <div class="row review-head">
+            <h3>Findings</h3>
+            <div class="spacer"></div>
+            <span id="review-status" class="state"></span>
+          </div>
+          <div id="review-incomplete" class="banner" role="alert" hidden></div>
+          <div id="review-counts" class="categories"></div>
+          <pre id="review-summary" class="plan" hidden></pre>
+          <p id="review-meta" class="muted small-text"></p>
+          <div id="review-findings"></div>
+          <p id="review-dropped" class="muted small-text" hidden></p>
         </div>
       </section>
 
