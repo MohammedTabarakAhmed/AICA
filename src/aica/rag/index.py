@@ -18,6 +18,7 @@ import hashlib
 import json
 import math
 import os
+import posixpath
 import sqlite3
 import time
 from collections import defaultdict
@@ -137,6 +138,18 @@ class IndexStats:
     files_removed: int
     chunks: int
     duration_ms: int
+
+
+def _resolve_import(importer: str, target: str) -> str:
+    """RAG-005: store a relative import (``./x``, ``../src/x.ts``) as a repository path.
+
+    Kept raw, ``../src/cart.ts`` matches nothing, so the files importing a module could
+    never be found. Package imports (``react``, ``node:test``) are left as written.
+    """
+    if not target.startswith(("./", "../")):
+        return target
+    joined = posixpath.normpath(posixpath.join(posixpath.dirname(importer), target))
+    return target if joined.startswith("..") else joined
 
 
 def sha256(text: str) -> str:
@@ -299,7 +312,9 @@ class RepositoryIndex:
                         chunk.end_line,
                     ),
                 )
-        for target in dict.fromkeys(t for c in chunks for t in c.imports):
+        for target in dict.fromkeys(
+            _resolve_import(rel_path, t) for c in chunks for t in c.imports
+        ):
             self.conn.execute("INSERT INTO deps(src_path,target) VALUES(?,?)", (rel_path, target))
         self.conn.execute(
             "INSERT INTO files(path,sha,language,size,indexed_at) VALUES(?,?,?,?,?)",
@@ -467,7 +482,8 @@ class RepositoryIndex:
     def dependents_of(self, rel_path: str) -> list[str]:
         """Files importing this module (matched by module-ish path stem)."""
         stem = Path(rel_path).with_suffix("").as_posix()
-        candidates = {stem, stem.replace("/", "."), Path(rel_path).stem}
+        # rel_path itself: a relative JS/TS import is stored resolved, extension and all.
+        candidates = {rel_path, stem, stem.replace("/", "."), Path(rel_path).stem}
         if stem.startswith("src/"):
             trimmed = stem[4:]
             candidates |= {trimmed, trimmed.replace("/", ".")}

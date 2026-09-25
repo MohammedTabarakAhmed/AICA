@@ -1669,7 +1669,24 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _tolerant_console() -> None:
+    """Never crash on a character the console cannot encode.
+
+    A Windows console defaults to a legacy code page, and tool output is not ours to
+    choose: Node's test runner prints U+2716, and one such character used to abort the
+    whole command with UnicodeEncodeError after the work had already run.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):  # pragma: no cover - a detached/closed stream
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _tolerant_console()
     parser = build_parser()
     args = parser.parse_args(argv)
     _OPEN_INDEXES.clear()

@@ -103,7 +103,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] NFR-001 progressive/streaming responses (SSE streaming adapter; `ask_stream` yields deltas; CLI streams by default)
 - [x] LANG-001 Python: coding, RAG, testing, execution (AST chunking, pytest discovery/run — verified on this repo)
 - [ ] LANG-002 Java: coding, RAG, testing, build (chunking + maven/gradle discovery implemented; not verified on a real Java repo)
-- [ ] LANG-003 TypeScript/JavaScript (chunking + npm/vitest/jest/playwright discovery implemented; browser testing is Phase 2)
+- [x] LANG-003 TypeScript/JavaScript (verified 2026-09-25 on a real TypeScript package with real Node 24 and npm - `tests/integration/test_typescript_project.py`: class/interface/function chunks retrieved by meaning and by symbol; npm `test` and `build` scripts discovered; a real node:test failure parsed to its file, line and assertion; and the agent loop fixed the bug, re-ran the real suite and the real build, and ended SUCCESS, confirmed by an independent `npm run test`. Using it found three bugs: node:test output was not parsed at all (a failing run reported `0 passed, 0 failed`, so the agent had no failure location); relative imports were stored raw, so `dependents_of` could never find a TS/JS importer and `node:test` was truncated to `node`; and on Windows any `aica` command crashed with UnicodeEncodeError printing Node's U+2716 after the work had already run. Not verified: Vitest/Jest output against a real install - their parsers exist but no package was installed from a registry. An index built before this fix keeps raw import targets for unchanged files until re-indexed with `--force`)
 - [ ] LANG-004 Go: (chunking + `go test`/`go vet` discovery implemented; not verified on a real Go repo)
 - [ ] LANG-005 Rust: (chunking + cargo discovery implemented; not verified on a real Rust repo)
 - [x] LANG-006 SQL (statement chunking plus the database tools: dialect-correct generation, execution against SQLite verified end to end, PostgreSQL dialect statements asserted directly)
@@ -281,6 +281,17 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### LANG-003 TypeScript/JavaScript — 2026-09-25
+- Real project: TypeScript package (interface, class, function, node:test suite, build
+  script), real Node v24.19.0 / npm 11.17.0, one seeded bug. Checked by hand with `aica
+  index/search/test`, then pinned as `tests/integration/test_typescript_project.py` (5 tests)
+  and `tests/test_node_support.py` (4 unit tests, no Node needed).
+- Checks: ruff clean, mypy strict 0 issues, **1005 passed, 2 skipped** (env-gated), 91%.
+- Bugs found and fixed: node:test output unparsed; JS/TS relative imports unresolved and
+  `node:test` truncated; CLI UnicodeEncodeError on a legacy Windows console code page.
+- Java (LANG-002), Go (LANG-004) and Rust (LANG-005) stay open: no JDK, Go or Rust
+  toolchain is installed on this machine.
 
 ### Phase 4 — concurrency (NFR-003) — 2026-09-25
 - New `src/aica/workspace/lease.py`; `ToolContext.lease_holder` and the mutating-call
