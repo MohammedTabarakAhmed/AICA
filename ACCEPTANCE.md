@@ -34,7 +34,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] CC-002 multi-line/function completion (`max_tokens`, block output; fence stripping)
 - [x] CC-003 repository context (completion injects retrieved project symbols, excluding the edited file)
 - [x] CC-004 language/framework conventions (`workspace.project_context.detect_conventions` reads line length, indent, quote style, frameworks, tooling and test layout from pyproject/package.json/.editorconfig/sources, with the evidence file recorded per item; the block is injected into the chat and completion system prompts and asserted in the prompt the model receives; `aica conventions`)
-- [x] CC-005 accept/reject/partial accept (on the web surface; the IDE surface does not exist. `aica.review.acceptance`: an edit is split into hunks with `difflib` and any subset can be kept - all is accept, none is reject, anything between is partial - computed exactly from the two texts, never by re-applying a patch. `GET /tasks/{id}/changes`, `POST /tasks/{id}/changes/decide`. Reject goes through `fs.rollback` to the pre-task snapshot and partial through `fs.write`, so both are audited, snapshotted, lease-checked and permission-checked. **A decision is refused if the file changed after the task finished** - each file's fingerprint is recorded when the run ends - because rejecting would otherwise also discard a person's later edit (the GIT-010 hazard). Created/deleted files are whole-file decisions; decisions are final and audited. Limitation: decisions are for tasks this server process ran - task records are in memory)
+- [x] CC-005 accept/reject/partial accept (on the web surface, and since 2026-09-25 in the VS Code extension (INT-001), verified there by rejecting a real agent edit and seeing the file reverted. `aica.review.acceptance`: an edit is split into hunks with `difflib` and any subset can be kept - all is accept, none is reject, anything between is partial - computed exactly from the two texts, never by re-applying a patch. `GET /tasks/{id}/changes`, `POST /tasks/{id}/changes/decide`. Reject goes through `fs.rollback` to the pre-task snapshot and partial through `fs.write`, so both are audited, snapshotted, lease-checked and permission-checked. **A decision is refused if the file changed after the task finished** - each file's fingerprint is recorded when the run ends - because rejecting would otherwise also discard a person's later edit (the GIT-010 hazard). Created/deleted files are whole-file decisions; decisions are final and audited. Limitation: decisions are for tasks this server process ran - task records are in memory)
 - [x] CC-006 completion model policy (completion goes through the same gateway; a distinct model is selectable per call)
 - [x] CC-007 credential/secret leakage protection (`_SECRET_LIKE` suppression + redaction of all model output)
 - [x] CHAT-001 code questions (`CodingAssistant.ask`, `aica ask`)
@@ -201,7 +201,7 @@ requirements are not lost. The BRD section is cited on each line.
 
 ## Phase 4 — Integrations, Administration and Evaluation
 
-- [ ] INT-001 IDE integration (not started — Phase 4)
+- [x] INT-001 IDE integration (VS Code extension in `ide/vscode/`, 2026-09-25: ask with clickable sources and continued sessions, explain selection (sent as untrusted), agent tasks with live streamed events and cancel, accept/reject/partial-accept of the task's changes (CC-005), working-tree review as real Problems-panel diagnostics with an explicit INCOMPLETE state, pending approvals, and opt-in inline completion. A thin surface over `aica serve`: policy, approvals and audit stay on the server. The token is in SecretStorage. New API endpoints `POST /chat` and `POST /complete`. **Verified in real VS Code 1.138** with an isolated profile against a real `aica serve` (scripted model): 10/10 integration checks, and a sabotaged check was confirmed to fail. 13 unit tests and 6 API tests. Packaged as a 12.6 KB .vsix)
 - [x] INT-002 CLI (`aica`: index, search, deps, ask, complete, test, run, git, models, sessions, policy, audit)
 - [x] INT-003 Web application (`src/aica/web/static`, served by `aica serve` at `/ui/`: sessions, tasks with model selection and kind of work, live progress over the event stream, pause/resume/cancel, plan and result with verification, diffs as decidable hunks, pending approvals and the model/routing table - 'manage sessions, tasks, models, diffs and approvals'. Plain HTML/CSS/JS with no build step and no third-party origin, so the page runs under `script-src 'self'` with no `unsafe-inline`; every value is inserted as text, and a task named `<img onerror=...>` was proved to render as text in a real browser. The page holds only the bearer token, in `sessionStorage` for that tab, so it can do nothing the API would not let the token do. Verified in real Chromium against a real uvicorn server: `tests/integration/test_web_ui.py`, with zero console errors or CSP violations. Not verified: that the static files ship in a built wheel - `package-data` is declared, but building one needs setuptools, which is not in the venv)
 - [ ] INT-004 approved collaboration integration
@@ -258,7 +258,7 @@ requirements are not lost. The BRD section is cited on each line.
 
 - [ ] Approved model selection including DeepSeek
 - [x] Same task can run against another approved model (2026-09-25: the same planted-bug task, from the same reset repository, reached SUCCESS on Groq `qwen/qwen3.8-27b` and on `glm-4.7-flash`, each confirmed by an independent pytest run; gpt-oss-120b ended INCOMPLETE with the provider's real error - see the verification record)
-- [ ] Chat/completion/RAG/agent experiences integrated
+- [x] Chat/completion/RAG/agent experiences integrated (2026-09-25: the same server-side chat, completion, retrieval and agent are reachable from the CLI, the web app (INT-003) and VS Code (INT-001); the VS Code integration test drives all four against one real server)
 - [x] Repository understanding → edit → test → report works (2026-09-25, live on Groq qwen3.8: read the code, ran the red suite, recovered from an edit that did not match, fixed both planted bugs, ran the suite green and reported SUCCESS with diffs; an independent pytest run confirmed 4/4 and the diff touched only `src/pricing.py`)
 - [ ] Filesystem/Git/terminal/browser/database are policy controlled
 - [ ] Agent recovers from failures within limits
@@ -281,6 +281,35 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### INT-001 VS Code extension — 2026-09-25
+- **Design**: a thin surface over `aica serve`. The extension decides nothing: policy, approvals,
+  audit and routing stay on the server, so the IDE cannot do anything the CLI or the web app
+  would not be allowed to. The token lives in VS Code SecretStorage (a test asserts it never
+  reaches `settings.json`). There are zero runtime dependencies. Dev-only npm packages are pinned in
+  `package-lock.json` and were installed with the user's approval.
+- **Server additions**: `POST /chat` (grounded answer with sources; continues a session; the
+  editor selection is fenced as untrusted, SAFE-007) and `POST /complete` (CC-007
+  suppression applies; a path outside the workspace gets 403). 6 API tests.
+- **Surfaces**: Ask / Explain Selection (a markdown answer with clickable `file:line`), Run Agent
+  Task (events streamed over SSE into an output channel, cancellable), Review Task Changes
+  (accept all / reject all / choose hunks), Review Working Tree (findings become diagnostics at
+  their lines; an incomplete review is labelled INCOMPLETE and never reads as clean), Pending
+  Approvals, and inline completion (off by default because every pause in typing is a model call).
+- **Verification**:
+  - 13 unit tests (event-stream parsing one character at a time, the client against a fake
+    `fetch`, the findings mapping).
+  - **10/10 integration checks in real VS Code 1.138** with an isolated user-data/extensions
+    profile, against a real `aica serve` in a throwaway git repo with a planted bug and a
+    planted CWE-89. The checks cover activation, the refusal without a token, token to
+    SecretStorage, ask plus a follow-up, explain selection, the SQL finding as an Error at the
+    right line, a real agent edit on disk, rejecting it (file reverted, and a decision is
+    final), rejecting a pending approval, and inline completion off by default then answering.
+  - **A sabotaged check** (accepting instead of rejecting) made the run fail, so the checks
+    can fail.
+- CI: a new `vscode-extension` job runs the strict compile, the unit tests, the integration
+  test in a downloaded VS Code under xvfb, and packaging.
+- Checks: ruff/format clean, mypy strict clean, **1131 passed, 2 skipped**.
 
 ### INT-006 GitHub connector and INT-005 review workflow — 2026-09-25
 - **Connector (INT-006).** `config/repositories.toml` names approved connectors. Each one names a
