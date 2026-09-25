@@ -83,13 +83,47 @@ _NODE_TAP_FAILURE = re.compile(
     re.M,
 )
 _GO_FAIL = re.compile(r"^---\s+FAIL:\s+(\S+)", re.M)
+# `go test -v`: one top-level "--- PASS/FAIL/SKIP: Name" per test (subtests are indented).
+_GO_RESULT = re.compile(r"^---\s+(PASS|FAIL|SKIP):\s+(\S+)", re.M)
+_GO_RUN = re.compile(r"^=== RUN\s+(\S+)")
+_GO_LOCATION = re.compile(r"^\s+([\w./\\-]+\.go):(\d+):\s*(.*)$")
 _GO_COUNTS = re.compile(r"^(ok|FAIL)\s+(\S+)", re.M)
 _MAVEN_COUNTS = re.compile(
     r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)"
 )
+# Surefire's summary lists each failure as "Class.method:line message" under
+# "[ERROR] Failures:" / "[ERROR] Errors:".
+_MAVEN_FAILURE = re.compile(
+    r"^\[ERROR\]\s{2,}(?:([\w.$]+)\.)?([\w$]+)\.([\w$]+):(\d+)\s+(.*)$", re.M
+)
+# "thread 'tests::name' (12020) panicked at src\lib.rs:36:9:" then the message. The thread
+# id in parentheses is new in recent Rust, so it is optional.
+_CARGO_PANIC = re.compile(
+    r"^thread '([^']+)'(?: \(\d+\))? panicked at (.+?):(\d+):\d+:?\s*\n(.*)$", re.M
+)
 _CARGO_COUNTS = re.compile(
     r"test result:\s+(\w+)\.\s+(\d+) passed;\s+(\d+) failed;\s+(\d+) ignored"
 )
+
+
+def _go_failures(text: str, failed: set[str]) -> list[TestFailure]:
+    """Attach each failing test to the first location it logged under its ``=== RUN``."""
+    located: dict[str, tuple[str, int, str]] = {}
+    current: str | None = None
+    for text_line in text.splitlines():
+        if (run := _GO_RUN.match(text_line)) is not None:
+            current = run.group(1)
+        elif current is not None and current not in located:
+            if (loc := _GO_LOCATION.match(text_line)) is not None:
+                located[current] = (loc.group(1), int(loc.group(2)), loc.group(3))
+    out: list[TestFailure] = []
+    for name in sorted(failed):
+        if name in located:
+            file, number, message = located[name]
+            out.append(TestFailure(test=name, file=file, line=number, message=message))
+        else:
+            out.append(TestFailure(test=name, file=None, line=None, message="go test failure"))
+    return out
 
 
 def _node_path(raw: str) -> str:
@@ -115,15 +149,33 @@ def parse_output(
     # Runner-specific formats are tried first: their summary lines also contain
     # "N passed"/"N failed", so the generic pytest counter would shadow them.
     counts = {m.group(2): int(m.group(1)) for m in _PYTEST_COUNTS.finditer(text)}
-    if (cm := _CARGO_COUNTS.search(text)) is not None:
-        outcome.passed = int(cm.group(2))
-        outcome.failed = int(cm.group(3))
-        outcome.skipped = int(cm.group(4))
-    elif (mm := _MAVEN_COUNTS.search(text)) is not None:
-        total, failures, errors, skipped = (int(g) for g in mm.groups())
+    if cargo := _CARGO_COUNTS.findall(text):
+        # One "test result:" per test binary - unit tests, each integration test file,
+        # doc-tests. The run's totals are their sum, not the first binary's.
+        outcome.passed = sum(int(c[1]) for c in cargo)
+        outcome.failed = sum(int(c[2]) for c in cargo)
+        outcome.skipped = sum(int(c[3]) for c in cargo)
+        for m in _CARGO_PANIC.finditer(text):
+            outcome.failures.append(
+                TestFailure(
+                    test=m.group(1),
+                    file=m.group(2).replace("\\", "/"),
+                    line=int(m.group(3)),
+                    message=m.group(4).strip(),
+                )
+            )
+    elif maven := _MAVEN_COUNTS.findall(text):
+        # Surefire prints a line per test class and then the total; the total is last.
+        total, failures, errors, skipped = (int(g) for g in maven[-1])
         outcome.failed = failures + errors
         outcome.skipped = skipped
         outcome.passed = max(total - outcome.failed - skipped, 0)
+        for m in _MAVEN_FAILURE.finditer(text):
+            package, cls, method, line, message = m.groups()
+            path = (package.replace(".", "/") + "/" if package else "") + f"{cls}.java"
+            outcome.failures.append(
+                TestFailure(test=f"{cls}.{method}", file=path, line=int(line), message=message)
+            )
     elif (jm := _JEST_COUNTS.search(text)) is not None:
         outcome.failed = int(jm.group(1) or 0)
         outcome.skipped = int(jm.group(2) or 0)
@@ -163,6 +215,11 @@ def parse_output(
                     test=test, file=file, line=int(loc.group(2)) if loc else None, message=message
                 )
             )
+    elif go_results := _GO_RESULT.findall(text):
+        outcome.passed = sum(1 for status, _ in go_results if status == "PASS")
+        outcome.failed = sum(1 for status, _ in go_results if status == "FAIL")
+        outcome.skipped = sum(1 for status, _ in go_results if status == "SKIP")
+        outcome.failures = _go_failures(text, {n for st, n in go_results if st == "FAIL"})
     elif _GO_COUNTS.search(text):
         fails = _GO_FAIL.findall(text)
         outcome.failed = len(fails)

@@ -150,6 +150,8 @@ def discover(root: str | Path) -> list[TestCommand]:
     # ---- JVM
     if (root / "pom.xml").exists():
         found.append(TestCommand("unit", "mvn -B test", "maven", "pom.xml present"))
+        # Compiles and packages without re-running the tests the unit check already ran.
+        found.append(TestCommand("build", "mvn -B package -DskipTests", "maven", "pom.xml present"))
         if "failsafe" in _read(root / "pom.xml"):
             found.append(
                 TestCommand(
@@ -159,13 +161,22 @@ def discover(root: str | Path) -> list[TestCommand]:
     if (root / "build.gradle").exists() or (root / "build.gradle.kts").exists():
         wrapper = "./gradlew" if (root / "gradlew").exists() else "gradle"
         found.append(TestCommand("unit", f"{wrapper} test", "gradle", "build.gradle present"))
+        found.append(
+            TestCommand("build", f"{wrapper} build -x test", "gradle", "build.gradle present")
+        )
 
     # ---- Go / Rust
     if (root / "go.mod").exists():
-        found.append(TestCommand("unit", "go test ./...", "go-test", "go.mod present"))
+        # -v, because plain `go test` names only failing tests and so cannot be counted.
+        found.append(TestCommand("unit", "go test -v ./...", "go-test", "go.mod present"))
         found.append(TestCommand("lint", "go vet ./...", "go-vet", "go.mod present"))
+        found.append(TestCommand("build", "go build ./...", "go-build", "go.mod present"))
     if (root / "Cargo.toml").exists():
-        found.append(TestCommand("unit", "cargo test", "cargo", "Cargo.toml present"))
+        # --no-fail-fast: otherwise one failing test binary hides every binary after it.
+        found.append(
+            TestCommand("unit", "cargo test --no-fail-fast", "cargo", "Cargo.toml present")
+        )
+        found.append(TestCommand("build", "cargo build", "cargo", "Cargo.toml present"))
         found.append(
             TestCommand("lint", "cargo clippy -- -D warnings", "clippy", "Cargo.toml present")
         )
