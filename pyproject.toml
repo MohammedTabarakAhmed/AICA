@@ -42,6 +42,10 @@ api = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# INT-003: the web application ships inside the package.
+"aica.web" = ["static/*"]
+
 [tool.pytest.ini_options]
 # tests/ holds unit tests; tests/integration holds the cross-module suite (TEST-003).
 testpaths = ["tests"]

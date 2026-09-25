@@ -34,7 +34,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] CC-002 multi-line/function completion (`max_tokens`, block output; fence stripping)
 - [x] CC-003 repository context (completion injects retrieved project symbols, excluding the edited file)
 - [x] CC-004 language/framework conventions (`workspace.project_context.detect_conventions` reads line length, indent, quote style, frameworks, tooling and test layout from pyproject/package.json/.editorconfig/sources, with the evidence file recorded per item; the block is injected into the chat and completion system prompts and asserted in the prompt the model receives; `aica conventions`)
-- [ ] CC-005 accept/reject/partial accept (requires the IDE surface, INT-001 — Phase 4)
+- [x] CC-005 accept/reject/partial accept (on the web surface; the IDE surface does not exist. `aica.review.acceptance`: an edit is split into hunks with `difflib` and any subset can be kept - all is accept, none is reject, anything between is partial - computed exactly from the two texts, never by re-applying a patch. `GET /tasks/{id}/changes`, `POST /tasks/{id}/changes/decide`. Reject goes through `fs.rollback` to the pre-task snapshot and partial through `fs.write`, so both are audited, snapshotted, lease-checked and permission-checked. **A decision is refused if the file changed after the task finished** - each file's fingerprint is recorded when the run ends - because rejecting would otherwise also discard a person's later edit (the GIT-010 hazard). Created/deleted files are whole-file decisions; decisions are final and audited. Limitation: decisions are for tasks this server process ran - task records are in memory)
 - [x] CC-006 completion model policy (completion goes through the same gateway; a distinct model is selectable per call)
 - [x] CC-007 credential/secret leakage protection (`_SECRET_LIKE` suppression + redaction of all model output)
 - [x] CHAT-001 code questions (`CodingAssistant.ask`, `aica ask`)
@@ -43,7 +43,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] CHAT-004 debugging with logs/context (`chat.diagnostics.parse_log` structures Python/Node/Java/compiler/pytest output into frames + error; project frames are separated from library frames; `CodingAssistant.debug` retrieves the implicated code via `RepositoryIndex.search_file`, attaches the log as untrusted and returns the diagnosis; verified against a traceback produced by really running failing code; `aica debug --log`)
 - [x] CHAT-005 session context (`Session` + `build_context`, multi-turn, persisted)
 - [x] CHAT-006 task-scoped attachments (`Attachment`, fenced as untrusted)
-- [ ] CHAT-007 structured plans/diffs/tests/findings (report/diff/test structures exist; rich rendering needs the Web/IDE surface — Phase 4)
+- [ ] CHAT-007 structured plans/diffs/tests/findings (plans, diffs as hunks and verification results are now rendered structurally on the web page (INT-003); review **findings** are returned as structured JSON by `POST /review` but the page does not render them yet)
 
 ### Repository / RAG
 - [x] RAG-001 repository indexing (`RepositoryIndex.index_repository`; verified on this repo: 75 files, 915 chunks, 573 symbols)
@@ -190,7 +190,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [x] SAFE-007 prompt-injection defense (nonce-fenced untrusted content for retrieval and attachments; severity-ranked scanner; permissions never parsed from content)
 - [x] SAFE-008 emergency stop (`CancellationToken` checked before every tool call and enforced on running subprocesses)
 - [x] UX-007 model selection before execution with capability information (`aica models` prints each model's family, version, context window, capabilities, status, pin and adapter, plus the routing table; `GET /models` returns the same and additionally **which model each kind of work resolves to today** and why any candidate is unavailable. Graphical rendering belongs to the IDE/Web surfaces, Phase 4)
-- [x] UX-008 approval requests displayed prominently (`ConsoleApprover` interactively; `aica approvals list` under an `=== N APPROVAL REQUEST(S) ===` banner and `GET /approvals` `summaries`, each leading with the **categories** - the reason a human is being asked - then tool, action and requester. IDE/Web display waits on INT-001/003)
+- [x] UX-008 approval requests displayed prominently (`ConsoleApprover` interactively; `aica approvals list` under an `=== N APPROVAL REQUEST(S) ===` banner and `GET /approvals` `summaries`, each leading with the **categories** - the reason a human is being asked - then tool, action and requester. and on the web page as a banner above every view plus a header badge, with the category chips first (INT-003). The IDE surface does not exist)
 - [x] API-012 list approved models and capabilities (`GET /models`, with `?include_unusable=true` to show entries that exist but may not be used together with the status that explains why - so a client shows "pending approval" instead of a model that silently is not there)
 - [x] API-013 select model: pin or policy-based routing (`POST /sessions/{id}/tasks` takes `model` to pin one by name or `task_kind` to let the routing policy choose; the 202 response returns the chosen name, the exact version, the reason and the fallback chain, and the session records what answered for it)
 - [x] API-014 approval request/approve/reject (`ApprovalQueue`, `.aica/admin/approvals.json`: `POST /approvals` records a request, `GET /approvals` lists pending (or `?include_decided=true`), `POST /approvals/{id}` decides; `aica approvals request|list|approve|reject`. An HTTP action refused for approval is now **parked in the queue** by `QueueingApprover` and the 409 names the request id, instead of the reason evaporating. The queue **holds records and never executes**: approving does not replay the action, the client re-sends it and it passes every gate again - a queue that ran things on approval would be a second execution path with different guards. Deciding needs the `approve` permission (ADM-001); the requester may not decide their own request (SEC-006 shape, checked against the recorded requester - and, like SEC-006, inert while RBAC is off, so a single-developer workspace can still decide its own); a decision is final; unanswered requests expire after 24h and cannot then be approved; an unreadable queue raises rather than reading as 'nothing pending'; writes are atomic and serialised across API worker threads)
@@ -203,7 +203,7 @@ requirements are not lost. The BRD section is cited on each line.
 
 - [ ] INT-001 IDE integration (not started — Phase 4)
 - [x] INT-002 CLI (`aica`: index, search, deps, ask, complete, test, run, git, models, sessions, policy, audit)
-- [ ] INT-003 Web application
+- [x] INT-003 Web application (`src/aica/web/static`, served by `aica serve` at `/ui/`: sessions, tasks with model selection and kind of work, live progress over the event stream, pause/resume/cancel, plan and result with verification, diffs as decidable hunks, pending approvals and the model/routing table - 'manage sessions, tasks, models, diffs and approvals'. Plain HTML/CSS/JS with no build step and no third-party origin, so the page runs under `script-src 'self'` with no `unsafe-inline`; every value is inserted as text, and a task named `<img onerror=...>` was proved to render as text in a real browser. The page holds only the bearer token, in `sessionStorage` for that tab, so it can do nothing the API would not let the token do. Verified in real Chromium against a real uvicorn server: `tests/integration/test_web_ui.py`, with zero console errors or CSP violations. Not verified: that the static files ship in a built wheel - `package-data` is declared, but building one needs setuptools, which is not in the venv)
 - [ ] INT-004 approved collaboration integration
 - [ ] INT-005 approved CI/CD integration
 - [ ] INT-006 repository-provider integration
@@ -281,6 +281,22 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### INT-003 web application and CC-005 — 2026-09-25
+- New: `src/aica/web/` (index.html, app.js, app.css), `src/aica/review/acceptance.py`,
+  `GET /tasks/{id}/changes`, `POST /tasks/{id}/changes/decide`, `/` -> `/ui/`, a security
+  header middleware (CSP on `/ui`, nosniff, no-referrer, frame DENY on everything),
+  `actor` in `GET /policy`, fingerprints on `TaskRecord`.
+- Checks: ruff/format clean, mypy strict 0 issues (91 files), **1025 passed, 2 skipped**
+  (env-gated), 91% coverage; `acceptance.py` 100%. `node --check` on app.js.
+- Real browser: Chromium via Playwright against uvicorn on loopback - sign in, approval banner,
+  new session, run a task whose text is hostile markup, live events, result, keep one of two
+  hunks (checked on disk), approve a request from the page (checked in the queue), models
+  table; zero console errors. A wrong token is refused on the sign-in form. The screenshot
+  was inspected by eye.
+- Open: wheel packaging of the static files is declared but not built; review findings are
+  not rendered on the page (CHAT-007); task records - and so change decisions - do not
+  survive a server restart.
 
 ### LANG-003 TypeScript/JavaScript — 2026-09-25
 - Real project: TypeScript package (interface, class, function, node:test suite, build
