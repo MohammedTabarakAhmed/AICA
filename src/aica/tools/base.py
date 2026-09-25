@@ -25,6 +25,7 @@ from aica.audit import AuditLog, EventCategory, InMemoryAuditSink, Outcome
 from aica.policy import CancellationToken, Policy
 from aica.policy.models import ActionCategory, Environment
 from aica.workspace import GitGuard, WorkspaceGuard
+from aica.workspace.lease import RepositoryBusy, RepositoryLease
 
 if TYPE_CHECKING:
     from aica.rag.index import RepositoryIndex
@@ -67,6 +68,10 @@ class ToolContext:
     # ADM-005. Where the audit records this quota counts from live. None disables quota
     # enforcement for this context, which is the in-memory/test case.
     audit_directory: Path | None = None
+    # NFR-003. The repository lease this context's run holds, if any. A mutating call is
+    # refused while another holder leases the repository, so an edit from outside a
+    # running agent task cannot land in the middle of it.
+    lease_holder: str | None = None
 
     @classmethod
     def for_workspace(
@@ -222,6 +227,18 @@ class Tool:
                 f"{self.name} in the production environment",
                 [ActionCategory.PRODUCTION],
             )
+        if self.mutating:
+            try:
+                RepositoryLease(ctx.workspace.root).check(ctx.lease_holder)
+            except RepositoryBusy as exc:
+                ctx.audit.record(
+                    category=EventCategory.POLICY_DECISION,
+                    action=f"{self.name}: repository leased by another task",
+                    outcome=Outcome.BLOCKED,
+                    tool=self.name,
+                    details={"rule": "NFR-003", "reason": str(exc)[:500]},
+                )
+                raise
         ctx.check_quota(self.name)
         started = time.monotonic()
         try:

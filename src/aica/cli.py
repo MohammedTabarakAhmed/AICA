@@ -24,6 +24,7 @@ Commands:
   aica sessions [--resume ID]        session history (MEM-001/003)
   aica admin disable|enable|status   switch a tool/model/integration off now (SEC-007)
   aica approvals list|approve|reject pending approvals (API-014, UX-008)
+  aica lease [--break]               agent-task lease on this repository (NFR-003)
   aica policy                        show the effective policy
   aica audit [--actor-filter A]      search the audit trail (ADM-007)
   aica usage [--days N]              usage and activity reporting (ADM-006)
@@ -66,7 +67,7 @@ from aica.approvals import (
 from aica.audit import AuditLog, EventCategory, JsonlAuditSink, Outcome
 from aica.chat.assistant import CodingAssistant
 from aica.chat.commit_message import InvalidCommitMessage, suggest_commit_message
-from aica.chat.session import Session, SessionStore
+from aica.chat.session import Session, SessionConflict, SessionStore
 from aica.database.connections import DatabaseError, load_databases
 from aica.database.migrations import MigrationError, generate_migration
 from aica.mcp.config import MCPConfigError, load_mcp_config
@@ -85,6 +86,7 @@ from aica.tools import ToolContext, default_registry
 from aica.tools.base import ToolArgumentError, ToolError, ToolNotAllowed
 from aica.tools.mcp_tool import MCPSession
 from aica.workspace import GitGuard, WorkspaceGuard
+from aica.workspace.lease import RepositoryBusy, RepositoryLease
 from aica.workspace.project_context import (
     ProjectContextStore,
     detect_conventions,
@@ -212,12 +214,22 @@ def cmd_deps(args: argparse.Namespace) -> int:
     return 0
 
 
+def _open_session(args: argparse.Namespace, ctx: ToolContext, store: SessionStore) -> Session:
+    """Load ``--session`` or start a new one owned by the actor (NFR-003).
+
+    With RBAC on, another principal's session is refused (PermissionError, exit 5).
+    """
+    if not args.session:
+        return Session(workspace=str(ctx.workspace.root), owner=ctx.actor.name)
+    session = store.load(args.session)
+    session.check_access(ctx.actor)
+    return session
+
+
 def cmd_ask(args: argparse.Namespace) -> int:
     ctx, index = _context(args)
     store = SessionStore(ctx.workspace.root)
-    session = (
-        store.load(args.session) if args.session else Session(workspace=str(ctx.workspace.root))
-    )
+    session = _open_session(args, ctx, store)
     try:
         adapter, _ = _adapter(args, ctx, TaskKind.CHAT)
     except (ModelError, PermissionError) as exc:
@@ -284,9 +296,7 @@ def cmd_debug(args: argparse.Namespace) -> int:
         print("empty log", file=sys.stderr)
         return 2
     store = SessionStore(ctx.workspace.root)
-    session = (
-        store.load(args.session) if args.session else Session(workspace=str(ctx.workspace.root))
-    )
+    session = _open_session(args, ctx, store)
     try:
         adapter, _ = _adapter(args, ctx, TaskKind.CHAT)
     except (ModelError, PermissionError) as exc:
@@ -492,9 +502,7 @@ def cmd_task(args: argparse.Namespace) -> int:
     """AG-001..AG-010: plan and carry out a task, streaming progress (UX-001..003)."""
     ctx, index = _context(args)
     store = SessionStore(ctx.workspace.root)
-    session = (
-        store.load(args.session) if args.session else Session(workspace=str(ctx.workspace.root))
-    )
+    session = _open_session(args, ctx, store)
     try:
         adapter, _ = _adapter(args, ctx, TaskKind.PLANNING)
     except (ModelError, PermissionError) as exc:
@@ -554,16 +562,38 @@ def cmd_task(args: argparse.Namespace) -> int:
         print(plan.render())
         return 0
 
-    report = loop.run(
-        task, ctx, budget=budget, context=context, conventions=conventions, state=state
+    # NFR-003: one agent task per working tree, across the CLI and any running server.
+    # Refused rather than waited for: a plan made now would run against a changed tree.
+    repository = RepositoryLease(ctx.workspace.root)
+    lease = repository.acquire(
+        actor=ctx.actor.name,
+        session_id=session.session_id,
+        task=task,
+        ttl_seconds=budget.max_seconds,
     )
+    ctx.lease_holder = lease.holder
+    try:
+        report = loop.run(
+            task, ctx, budget=budget, context=context, conventions=conventions, state=state
+        )
+    finally:
+        repository.release(lease)
 
     # AG-005/NFR-002: persist the run so it can be resumed after this process exits.
-    if loop.state is not None:
-        session.task_state[STATE_KEY] = loop.state.to_json()
-    session.add("user", task)
-    session.add("assistant", report.render(), model=report.model)
-    saved = store.save(session)
+    # Applied to the latest saved copy, so a turn saved by someone else during the run is
+    # kept rather than overwritten (NFR-003).
+    run_state = loop.state.to_json() if loop.state is not None else None
+
+    def record_run(latest: Session) -> None:
+        latest.model_name = session.model_name
+        latest.policy_version = session.policy_version
+        if run_state is not None:
+            latest.task_state[STATE_KEY] = run_state
+        latest.add("user", task)
+        latest.add("assistant", report.render(), model=report.model)
+
+    session = store.update(session, record_run)
+    saved = store.path_for(session.session_id)
 
     print(report.render(include_diffs=args.show_diffs))
     print(
@@ -1158,6 +1188,26 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 3
 
 
+def cmd_lease(args: argparse.Namespace) -> int:
+    """NFR-003: show, or administratively break, the repository's agent-task lease."""
+    ctx, _ = _context(args)
+    repository = RepositoryLease(ctx.workspace.root)
+    if not args.break_lease:
+        lease = repository.current()
+        print(f"busy: {lease.describe()}" if lease else "free: no agent task holds this repository")
+        return 0
+    ctx.require_permission(Permission.ADMINISTER, "break a repository lease")
+    broken = repository.force_release()
+    ctx.audit.record(
+        category=EventCategory.POLICY_DECISION,
+        action="repository lease broken",
+        outcome=Outcome.SUCCESS,
+        details={"rule": "NFR-003", "lease": broken.public() if broken else None},
+    )
+    print(f"broken: {broken.describe()}" if broken else "no lease to break")
+    return 0
+
+
 def cmd_policy(args: argparse.Namespace) -> int:
     ctx, _ = _context(args)
     p = ctx.policy
@@ -1575,6 +1625,15 @@ def build_parser() -> argparse.ArgumentParser:
         ap.add_argument("--note", action="append")
         ap.set_defaults(func=cmd_approvals)
 
+    sp = sub.add_parser("lease", help="which agent task holds this repository (NFR-003)")
+    sp.add_argument(
+        "--break",
+        dest="break_lease",
+        action="store_true",
+        help="release a lease left by a dead process (administer; audited)",
+    )
+    sp.set_defaults(func=cmd_lease)
+
     sp = sub.add_parser("policy", help="show the effective policy")
     sp.add_argument("--history", action="store_true", help="policy versions seen (ADM-008)")
     sp.set_defaults(func=cmd_policy)
@@ -1626,6 +1685,10 @@ def main(argv: list[str] | None = None) -> int:
     except PermissionError as exc:
         print(f"policy denied: {exc}", file=sys.stderr)
         return 5
+    except (RepositoryBusy, SessionConflict) as exc:
+        # NFR-003: someone else is working here. Nothing was changed by this command.
+        print(str(exc), file=sys.stderr)
+        return 7
     except KeyboardInterrupt:
         print("\ncancelled", file=sys.stderr)
         return 130
