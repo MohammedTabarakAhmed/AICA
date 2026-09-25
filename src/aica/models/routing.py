@@ -435,6 +435,14 @@ class ModelRouter:
             )
         usable = [name for name, _ in chain]
         primary = self.gateway.config_for(usable[0])
+        # The reason describes the model that was *meant* to serve. When that one was skipped
+        # (no credential, refused endpoint, too small a window), whatever serves instead came
+        # from the fallback chain, and saying "routing rule" would misreport where it came from.
+        rule = self.config.rule_for(task)
+        intended = requested or (rule.model if rule and rule.model else None)
+        intended = intended or self.gateway.default_name()
+        if intended and intended != primary.name and intended in rejected:
+            reason = f"fallback (MM-010): {intended} skipped - {rejected[intended]}"
         adapter = FallbackAdapter(
             chain,
             primary.info(),
@@ -462,6 +470,7 @@ class ModelRouter:
                     "task": task.value,
                     "reason": reason,
                     "fallbacks": ", ".join(selection.fallbacks),
+                    "skipped": "; ".join(f"{n}: {why}" for n, why in rejected.items())[:500],
                     "pinned": primary.pinned,
                 },
                 session_id=self.session_id,

@@ -566,6 +566,36 @@ def test_a_model_whose_credential_is_missing_is_skipped_at_selection(
     assert "AICA_TEST_MISSING_KEY" in selection.rejected["needs-key"]
 
 
+def test_a_selection_made_by_fallback_says_so_and_audits_what_it_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MM-012 provenance. Found in a real run with no DeepSeek key: the local model served chat
+    and the banner said "routing rule for chat", as if the rule had chosen it."""
+    monkeypatch.delenv("AICA_TEST_MISSING_KEY", raising=False)
+    gw = gateway(
+        model("needs-key", api_key_env="AICA_TEST_MISSING_KEY"),
+        model("no-key-needed", host="backup"),
+        default="needs-key",
+        routing=RoutingConfig(
+            rules=[RoutingRule(task=TaskKind.CHAT, model="needs-key")],
+            fallbacks=["no-key-needed"],
+        ),
+        handler=responder({"primary": 200, "backup": "second"}),
+    )
+    log = audit_log()
+    selection = router(gw, log).select(TaskKind.CHAT)
+    assert selection.name == "no-key-needed"
+    assert selection.reason.startswith("fallback (MM-010): needs-key skipped")
+    assert "AICA_TEST_MISSING_KEY" in selection.reason
+    route = [e for e in events(log) if e.action == "route chat"][0]
+    assert "needs-key" in route.details["skipped"]
+    assert route.details["reason"] == selection.reason
+
+    # When the intended model is usable, the reason is still the rule's.
+    monkeypatch.setenv("AICA_TEST_MISSING_KEY", "k")
+    assert router(gw).select(TaskKind.CHAT).reason == "routing rule for chat (MM-009)"
+
+
 def test_a_single_candidate_reports_its_own_problem(monkeypatch: pytest.MonkeyPatch) -> None:
     """With nowhere to fall back to, the caller sees the real error, not a routing summary."""
     monkeypatch.delenv("AICA_TEST_MISSING_KEY", raising=False)
@@ -603,12 +633,58 @@ def test_the_repository_registry_is_valid_and_declares_its_families() -> None:
     """MM-005/006/007: GLM, Kimi and DeepSeek are all configured, by configuration alone."""
     gw = ModelGateway.from_file(NetworkPolicy(), "config/models.toml")
     families = {i.family for i in gw.list_models(include_unusable=True)}
-    assert {"deepseek", "glm", "kimi"} <= families
+    assert {"deepseek", "glm", "kimi", "gemini", "gpt-oss", "qwen"} <= families
     # Only what is approved and deployed is usable today.
-    assert [i.name for i in gw.list_models()] == ["deepseek-chat", "glm-4.7-flash"]
+    assert [i.name for i in gw.list_models()] == [
+        "deepseek-chat",
+        "glm-4.7-flash",
+        "gemini-3.8-flash",
+        "groq-gpt-oss-120b",
+        "groq-qwen3.8-27b",
+        "qwen2.5-coder-7b",
+    ]
     assert gw.default_name() == "deepseek-chat"
     # And the routing rules in that file resolve to models that exist.
     assert gw.routing.rule_for(TaskKind.PLANNING) is not None
+
+
+def test_the_local_model_is_a_fallback_only_for_work_that_fits_its_served_window() -> None:
+    """Ollama serves qwen2.5-coder with 4096 tokens and truncates silently beyond that, so the
+    shipped chain may use it for chat but must skip it for planning and review, and say why."""
+    gw = ModelGateway.from_file(NetworkPolicy(), "config/models.toml")
+    local = gw.config_for("qwen2.5-coder-7b")
+    assert local.api_key_env is None and local.host == "127.0.0.1"
+    assert local.context_window == 4096
+
+    chat, _, _ = router(gw).candidates(TaskKind.CHAT)
+    assert chat == [
+        "deepseek-chat",
+        "gemini-3.8-flash",
+        "groq-gpt-oss-120b",
+        "glm-4.7-flash",
+        "groq-qwen3.8-27b",
+        "qwen2.5-coder-7b",
+    ]
+
+    for task in (TaskKind.PLANNING, TaskKind.REVIEW):
+        usable, rejected, _ = router(gw).candidates(task)
+        assert "qwen2.5-coder-7b" not in usable
+        assert rejected["qwen2.5-coder-7b"] == "context window 4096 < 32000"
+
+
+def test_the_shipped_policy_allows_the_local_model_endpoint_and_nothing_wider() -> None:
+    """The loopback entry is an exact host: it must not open other local names or ports' hosts."""
+    from aica.policy import load_policy
+
+    network = load_policy("config/policy.toml").network
+    assert network.is_host_allowed("127.0.0.1")
+    assert not network.is_host_allowed("127.0.0.2")
+    assert not network.is_host_allowed("example.com")
+    assert network.is_host_allowed("api.groq.com")
+    assert network.is_host_allowed("generativelanguage.googleapis.com")
+    assert not network.is_host_allowed("googleapis.com")  # exact hosts, no wildcard
+    gw = ModelGateway.from_file(network, "config/models.toml")
+    assert gw.get("qwen2.5-coder-7b").info.family == "qwen"  # builds with no key set
 
 
 # ---------------------------------------------------------------- the remaining edges
