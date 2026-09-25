@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import fnmatch
+import hashlib
 import os
 from pathlib import Path
 from typing import ClassVar
@@ -66,7 +67,7 @@ def _prepare_modification(
             f"modify sensitive file {resolved.relative.as_posix()}",
             [ActionCategory.SECRET_ACCESS],
         )
-    if ctx.git is not None:
+    if ctx.git is not None and not _is_own_write(ctx, resolved.absolute):
         if allow_dirty:
             ctx.require_approval(
                 tool,
@@ -75,6 +76,27 @@ def _prepare_modification(
             )
         ctx.git.assert_safe_to_modify([resolved.absolute], allow_dirty=allow_dirty)
     return resolved.absolute, resolved.relative.as_posix()
+
+
+def _digest(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _is_own_write(ctx: ToolContext, path: Path) -> bool:
+    """True when this run wrote ``path`` and nobody has changed it since (GIT-010)."""
+    recorded = ctx.own_writes.get(path.as_posix())
+    return recorded is not None and recorded == _digest(path)
+
+
+def _record_own_write(ctx: ToolContext, path: Path) -> None:
+    digest = _digest(path)
+    if digest is None:
+        ctx.own_writes.pop(path.as_posix(), None)
+    else:
+        ctx.own_writes[path.as_posix()] = digest
 
 
 # ------------------------------------------------------------------ FS-001
@@ -192,6 +214,7 @@ class WriteFile(Tool):
         before = absolute.read_text(encoding="utf-8", errors="replace") if existed else ""
         absolute.parent.mkdir(parents=True, exist_ok=True)
         absolute.write_text(args.content, encoding="utf-8", newline="\n")
+        _record_own_write(ctx, absolute)
         diff = unified_diff(before, args.content, rel)
         return ToolResult(
             output=diff,
@@ -236,6 +259,7 @@ class EditFile(Tool):
         sid = args.snapshot_id or store.create(f"fs.edit {rel}")
         store.capture(sid, absolute)
         absolute.write_text(after, encoding="utf-8", newline="\n")
+        _record_own_write(ctx, absolute)
         diff = unified_diff(before, after, rel)
         return ToolResult(
             output=diff,
@@ -280,6 +304,8 @@ class MoveFile(Tool):
         store.capture(sid, dst_abs)
         dst_abs.parent.mkdir(parents=True, exist_ok=True)
         src_abs.rename(dst_abs)
+        ctx.own_writes.pop(src_abs.as_posix(), None)
+        _record_own_write(ctx, dst_abs)
         return ToolResult(
             output=f"moved {src_rel} -> {dst_rel}",
             data={"source": src_rel, "destination": dst_rel, "snapshot_id": sid},
@@ -313,6 +339,7 @@ class DeleteFile(Tool):
         sid = args.snapshot_id or store.create(f"fs.delete {rel}")
         store.capture(sid, absolute)
         absolute.unlink()
+        ctx.own_writes.pop(absolute.as_posix(), None)
         return ToolResult(output=f"deleted {rel}", data={"path": rel, "snapshot_id": sid})
 
 

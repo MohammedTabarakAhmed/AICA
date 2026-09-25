@@ -257,9 +257,9 @@ requirements are not lost. The BRD section is cited on each line.
 ## Business Acceptance
 
 - [ ] Approved model selection including DeepSeek
-- [ ] Same task can run against another approved model
+- [x] Same task can run against another approved model (2026-09-25: the same planted-bug task, from the same reset repository, reached SUCCESS on Groq `qwen/qwen3.8-27b` and on `glm-4.7-flash`, each confirmed by an independent pytest run; gpt-oss-120b ended INCOMPLETE with the provider's real error - see the verification record)
 - [ ] Chat/completion/RAG/agent experiences integrated
-- [ ] Repository understanding → edit → test → report works
+- [x] Repository understanding → edit → test → report works (2026-09-25, live on Groq qwen3.8: read the code, ran the red suite, recovered from an edit that did not match, fixed both planted bugs, ran the suite green and reported SUCCESS with diffs; an independent pytest run confirmed 4/4 and the diff touched only `src/pricing.py`)
 - [ ] Filesystem/Git/terminal/browser/database are policy controlled
 - [ ] Agent recovers from failures within limits
 - [ ] Protected changes are reviewable
@@ -281,6 +281,49 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### End-to-end agent runs on live models, and what they found — 2026-09-25
+- Task: a throwaway git repository with two planted bugs in `src/pricing.py` (4 tests, 3
+  failing). The task is "make the failing tests pass by fixing src/pricing.py; do not modify the
+  tests". The repository was reset to the same commit before every run, and each result was confirmed
+  by an independent pytest run.
+- **Groq qwen3.8: SUCCESS** (6 steps, 4.6s, both bugs fixed). **GLM-4.7-flash: SUCCESS** (9 steps,
+  29s, both bugs fixed in two separate edits of the same file). **gpt-oss-120b: INCOMPLETE**, zero
+  steps. It answered the planner with a native tool call where a JSON plan was asked for,
+  and Groq refused it: HTTP 400 "Tool choice is none, but model called a tool". Reported
+  honestly; no change made.
+- **Three defects found by the live runs, all fixed and pinned:**
+  1. **GIT-010 blocked the agent's own work.** The agent's first write made the file dirty,
+     and the guard then refused the agent's correction as a developer's uncommitted change.
+     Fixed: the run records a sha256 of what it wrote (`ToolContext.own_writes`, shared with
+     subagents). A dirty file whose content still matches is the run's own work. If anyone
+     changes it, the hash differs and the file is protected again. A new run inherits
+     nothing. Pinned by `test_a_run_may_keep_working_on_a_file_it_changed_itself`,
+     `test_a_file_the_run_wrote_is_protected_again_once_someone_else_changes_it`,
+     `test_another_run_does_not_inherit_the_exemption`,
+     `test_the_agent_can_correct_its_own_edit_in_a_repository`.
+  2. **The refusal crashed the run.** `UserChangesPresent` and `ProtectedBranch` were bare
+     `RuntimeError`s. Neither the loop nor the API caught them, so the run ended in a traceback with no
+     report. They are now `PermissionError`s, handled as the policy refusals they are: the agent stops with a
+     report, the API answers 409, the CLI exits cleanly, and the audit records BLOCKED. Pinned by
+     `test_a_developer_change_stops_the_agent_with_a_report_not_a_crash`.
+  3. **A test run where nothing ran hid why (TEST-005).** The model's own `python -m pytest` hit
+     an interpreter without pytest. The tool said only "0 passed, 0 failed", and the model
+     guessed its way to `pip install` (refused by the approval gate, correctly). Now the
+     output tail is included, and the discovered command is offered. Pinned by
+     `test_a_run_where_no_tests_ran_shows_why_and_the_discovered_command`.
+- **Empty answer at the token limit (TEST-009), fixed.** A reply with no answer text and
+  `finish_reason=length` now raises `EmptyAnswer`, a `ModelError`. It is not a fallback
+  trigger: the model is available, the budget was too small. A truncated answer that has
+  text is still returned. Streaming does the same when a stream ends that way with nothing
+  yielded. The live test's 16-token budget became 64, and **gpt-oss-120b is now 5/5 live**.
+- The first run also showed a planning weakness: the model wrote the literal text
+  `placeholder` into the file, planning to fill it in later, because a plan is written before
+  any file is read. The repair path corrected it once the crash was fixed. Deferred step
+  arguments would remove the wasted step. Not done here.
+- 5 of the new tests fail on the old code, and the 2 that pass both ways pin protections that
+  already existed.
+- Checks: ruff/format clean, mypy strict clean, **1105 passed, 2 skipped**, 91% coverage.
 
 ### Gemini and Groq free tiers — 2026-09-25 (Groq verified live, Gemini partly)
 - Configured `gemini-3.8-flash` (1M context), and on Groq `openai/gpt-oss-120b` and

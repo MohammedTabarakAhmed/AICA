@@ -72,6 +72,12 @@ class ToolContext:
     # refused while another holder leases the repository, so an edit from outside a
     # running agent task cannot land in the middle of it.
     lease_holder: str | None = None
+    # GIT-010. What this run itself wrote: absolute path -> sha256 of the content it left.
+    # A dirty file whose content still hashes to that value is the run's own change, and
+    # the run may keep working on it; if anyone else touched it since, the hash differs and
+    # the file is protected like any other developer change. Shared (not copied) with
+    # subagents, whose context is a shallow ``replace`` of this one.
+    own_writes: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def for_workspace(

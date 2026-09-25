@@ -19,8 +19,13 @@ class GitError(RuntimeError):
     pass
 
 
-class UserChangesPresent(RuntimeError):
-    """Raised when a target path has uncommitted developer changes (GIT-010)."""
+class UserChangesPresent(PermissionError):
+    """Raised when a target path has uncommitted developer changes (GIT-010).
+
+    A ``PermissionError`` because it is a policy refusal, and every caller already treats
+    those as one: the agent stops with a report, the API answers 409, the CLI exits cleanly.
+    As a bare ``RuntimeError`` it escaped all three and crashed a live agent run.
+    """
 
     def __init__(self, paths: list[str]) -> None:
         self.paths = paths
@@ -31,8 +36,8 @@ class UserChangesPresent(RuntimeError):
         )
 
 
-class ProtectedBranch(RuntimeError):
-    pass
+class ProtectedBranch(PermissionError):
+    """GIT-003/007: a policy refusal, for the same reason as ``UserChangesPresent``."""
 
 
 @dataclass(frozen=True)
