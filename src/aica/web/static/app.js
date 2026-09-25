@@ -262,7 +262,9 @@ async function selectTask(id) {
   $("task-events").replaceChildren();
   await loadTasks();
   const detail = await renderTask();
-  if (detail && (detail.state === "queued" || detail.state === "running")) startStream(id);
+  // Always stream: the server replays a task's history first and closes at once when it has
+  // finished, so a task that ended before this point still shows its progress (UX-001).
+  if (detail) startStream(id, detail.state === "queued" || detail.state === "running");
 }
 
 async function renderTask() {
@@ -321,7 +323,7 @@ function stopStream() {
   state.stream = null;
 }
 
-async function startStream(taskId) {
+async function startStream(taskId, refreshWhenDone = true) {
   stopStream();
   const controller = new AbortController();
   state.stream = controller;
@@ -350,7 +352,8 @@ async function startStream(taskId) {
   }
   if (state.stream === controller) {
     state.stream = null;
-    if (state.task === taskId) {
+    // A finished task is already rendered; redrawing it would reset the change checkboxes.
+    if (refreshWhenDone && state.task === taskId) {
       await renderTask();
       await loadTasks();
     }
