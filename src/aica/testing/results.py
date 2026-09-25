@@ -70,6 +70,18 @@ _PYTEST_FAILURE = re.compile(r"^(?:FAILED|ERROR)\s+([^\s:]+)::(\S+)(?:\s+-\s+(.*
 _PYTEST_ASSERT_LOC = re.compile(r"^([\w./\\-]+\.py):(\d+):", re.M)
 _COVERAGE = re.compile(r"^TOTAL\s+.*?(\d+(?:\.\d+)?)%", re.M)
 _JEST_COUNTS = re.compile(r"Tests:\s+(?:(\d+) failed,\s*)?(?:(\d+) skipped,\s*)?(\d+) passed")
+# node:test (built into Node 18+). The spec reporter prints "(i) pass 2" with U+2139, the
+# TAP reporter "# pass 2"; both end with the same tally, so one pattern covers both.
+_NODE_COUNTS = re.compile(r"^[#\u2139]\s+(pass|fail|skipped|todo|cancelled)\s+(\d+)\s*$", re.M)
+# Spec reporter failure block: "test at test\cart.test.ts:5:1", then U+2716 and the name.
+_NODE_FAILURE = re.compile(
+    r"^test at (.+?):(\d+):\d+\s*\n\u2716 (.+?) \([\d.]+m?s\)\s*\n\s*(.*)$", re.M
+)
+# TAP reporter failure: "not ok 1 - name" followed by a YAML block with "location: 'f:5:1'".
+_NODE_TAP_FAILURE = re.compile(
+    r"^\s*not ok \d+ - (.+?)\s*\n(?:.*\n){0,6}?\s*location: '(?:file:///)?(.+?):(\d+):\d+'",
+    re.M,
+)
 _GO_FAIL = re.compile(r"^---\s+FAIL:\s+(\S+)", re.M)
 _GO_COUNTS = re.compile(r"^(ok|FAIL)\s+(\S+)", re.M)
 _MAVEN_COUNTS = re.compile(
@@ -78,6 +90,11 @@ _MAVEN_COUNTS = re.compile(
 _CARGO_COUNTS = re.compile(
     r"test result:\s+(\w+)\.\s+(\d+) passed;\s+(\d+) failed;\s+(\d+) ignored"
 )
+
+
+def _node_path(raw: str) -> str:
+    """TAP escapes each backslash as two; either way a Windows path becomes slashed."""
+    return re.sub(r"\\+", "/", raw)
 
 
 def parse_output(
@@ -111,6 +128,29 @@ def parse_output(
         outcome.failed = int(jm.group(1) or 0)
         outcome.skipped = int(jm.group(2) or 0)
         outcome.passed = int(jm.group(3) or 0)
+    elif node_counts := {m.group(1): int(m.group(2)) for m in _NODE_COUNTS.finditer(text)}:
+        outcome.passed = node_counts.get("pass", 0)
+        outcome.failed = node_counts.get("fail", 0) + node_counts.get("cancelled", 0)
+        outcome.skipped = node_counts.get("skipped", 0) + node_counts.get("todo", 0)
+        for m in _NODE_FAILURE.finditer(text):
+            outcome.failures.append(
+                TestFailure(
+                    test=m.group(3),
+                    file=_node_path(m.group(1)),
+                    line=int(m.group(2)),
+                    message=m.group(4).strip(),
+                )
+            )
+        if not outcome.failures:
+            for m in _NODE_TAP_FAILURE.finditer(text):
+                outcome.failures.append(
+                    TestFailure(
+                        test=m.group(1),
+                        file=_node_path(m.group(2)),
+                        line=int(m.group(3)),
+                        message="",
+                    )
+                )
     elif counts:
         outcome.passed = counts.get("passed", 0) + counts.get("xpassed", 0)
         outcome.failed = counts.get("failed", 0) + counts.get("error", 0) + counts.get("errors", 0)
