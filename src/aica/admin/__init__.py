@@ -4,6 +4,12 @@ The policy file expresses standing rules. This package is the operational half: 
 things an administrator does *now*, without an editor, a commit or a restart.
 """
 
+from aica.admin.approval_queue import (
+    ApprovalError,
+    ApprovalQueue,
+    DecisionState,
+    PendingApproval,
+)
 from aica.admin.controls import (
     ChangeRecord,
     ControlError,
@@ -32,12 +38,16 @@ from aica.admin.reporting import (
 )
 
 __all__ = [
+    "ApprovalError",
+    "ApprovalQueue",
     "AuditQuery",
     "ChangeRecord",
     "ControlError",
     "ControlPlane",
+    "DecisionState",
     "Disabled",
     "NotPermitted",
+    "PendingApproval",
     "Permission",
     "Principal",
     "RbacPolicy",

@@ -33,6 +33,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from aica.admin.approval_queue import ApprovalError, ApprovalQueue, QueueingApprover
 from aica.admin.controls import ControlError, ControlPlane, TargetKind
 from aica.admin.rbac import Permission
 from aica.admin.reporting import (
@@ -46,7 +47,12 @@ from aica.admin.reporting import (
 from aica.admin.reporting import search as audit_search
 from aica.agent.loop import STATE_KEY, AgentLoop, AgentState
 from aica.api.tasks import TaskManager, event_payload
-from aica.approvals import AllowAllApprover, ApprovalRequired, Approver, DenyAllApprover
+from aica.approvals import (
+    AllowAllApprover,
+    ApprovalRequest,
+    ApprovalRequired,
+    Approver,
+)
 from aica.audit import AuditLog, EventCategory, JsonlAuditSink, Outcome
 from aica.chat.assistant import CodingAssistant
 from aica.chat.session import Session, SessionStore
@@ -55,6 +61,7 @@ from aica.models.gateway import ModelGateway
 from aica.models.routing import ModelRouter, Selection, TaskKind
 from aica.policy import Policy, load_policy
 from aica.policy.budget import RunBudget
+from aica.policy.models import ActionCategory
 from aica.rag.index import RepositoryIndex
 from aica.review.reviewer import DEFAULT_CHECKS, CodeReviewer, ReviewCheck, ReviewRequest
 from aica.tools import ToolContext, default_registry
@@ -171,6 +178,17 @@ class RetentionRequest(BaseModel):
     apply: bool = False  # a destructive default would be the wrong one
 
 
+class ApprovalSubmission(BaseModel):
+    """API-014: ask a human to decide an action. Recording it runs nothing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(min_length=1, max_length=4000)
+    tool: str = Field(default="", max_length=100)
+    categories: list[str] = Field(default_factory=list)
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class ApprovalDecision(BaseModel):
     """API: approve or reject a pending sensitive action (BRD section 15 'Approval')."""
 
@@ -222,7 +240,13 @@ def create_app(settings: ApiSettings) -> FastAPI:
         policy: Policy = load_policy(settings.policy_file)
         workspace = WorkspaceGuard(root, policy.autonomy.allowed_directories)
         git = GitGuard(workspace.root, policy.git)
-        approver: Approver = AllowAllApprover() if auto_approve else DenyAllApprover()
+        # API-014: without auto_approve the action is still refused, but the request is
+        # parked in the queue so a human has something to decide instead of a lost 409.
+        approver: Approver = (
+            AllowAllApprover()
+            if auto_approve
+            else QueueingApprover(ApprovalQueue(root), requested_by=settings.actor)
+        )
         # A task started here runs on a worker thread and takes the index with it, so the
         # connection has to outlive the request thread that opened it.
         index = RepositoryIndex(workspace, allow_thread_handoff=True)
@@ -275,13 +299,21 @@ def create_app(settings: ApiSettings) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"unknown session {session_id}") from exc
 
+    def _queued(ctx: ToolContext, reason: str) -> str:
+        """Name the queued request in a 409, so the refusal says where to decide it."""
+        approver = ctx.approver
+        if isinstance(approver, QueueingApprover) and approver.submitted:
+            ids = ", ".join(e.id for e in approver.submitted)
+            return f"{reason} [approval request(s) {ids} queued: GET /approvals (API-014)]"
+        return reason
+
     def call_tool(request: ToolCallRequest, session_id: str | None = None) -> dict[str, Any]:
         ctx, index = build_context(session_id, auto_approve=request.auto_approve)
         try:
             result = default_registry().call(request.tool, request.arguments, ctx)
         except ApprovalRequired as exc:
             # 409: the request was understood and refused pending a human decision.
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=_queued(ctx, str(exc))) from exc
         except (ToolNotAllowed, PermissionError) as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ToolArgumentError as exc:
@@ -692,39 +724,75 @@ def create_app(settings: ApiSettings) -> FastAPI:
             index.close()
 
     # ------------------------------------------------------------------ approvals
-    @app.get("/approvals", dependencies=guard)
-    def list_approvals() -> dict[str, Any]:
-        """Pending approvals.
+    def _queue() -> ApprovalQueue:
+        return ApprovalQueue(settings.workspace.resolve())
 
-        A request-scoped approver cannot hold state between requests, so an action needing
-        approval is refused with 409 and the client re-sends it with ``auto_approve`` after a
-        human decides. This endpoint reports that contract rather than pretending to hold a
-        queue that does not exist.
+    @app.get("/approvals", dependencies=guard)
+    def list_approvals(include_decided: bool = False) -> dict[str, Any]:
+        """API-014 / UX-008: what is waiting for a human, most recent first.
+
+        The queue holds records; it never runs anything. Approving does not replay the
+        action - the client re-sends it, and it passes every gate again. A queue that
+        executed on approval would be a second execution path with different guards from
+        the first, which is the one thing this system does not have.
         """
+        try:
+            entries = _queue().all() if include_decided else _queue().pending()
+        except ApprovalError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
         return {
-            "pending": [],
-            "contract": (
-                "An action requiring approval is refused with HTTP 409 and the reason. "
-                "Re-send the same request with auto_approve=true to record an approved "
-                "decision, which is audited."
-            ),
+            "count": len(entries),
+            "approvals": [json.loads(e.model_dump_json()) for e in entries],
+            "summaries": [e.describe() for e in entries],
         }
+
+    @app.post("/approvals", status_code=201, dependencies=guard)
+    def request_approval(request: ApprovalSubmission) -> dict[str, Any]:
+        """Record a request for a human to decide (SAFE-002)."""
+        try:
+            categories = tuple(ActionCategory(c) for c in request.categories)
+        except ValueError as exc:
+            # An unknown category is a malformed request, not a conflict: the caller can
+            # fix it, and a 500 would suggest the server is at fault.
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        submission = ApprovalRequest(
+            action=request.action,
+            categories=categories,
+            tool=request.tool,
+            details=request.details,
+        )
+        try:
+            entry = _queue().submit(submission, requested_by=settings.actor)
+        except ApprovalError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        payload: dict[str, Any] = json.loads(entry.model_dump_json())
+        return payload
 
     @app.post("/approvals/{decision_id}", dependencies=guard)
     def decide_approval(decision_id: str, decision: ApprovalDecision) -> dict[str, Any]:
+        """API-014: record a decision. The requester may not decide their own (SEC-006)."""
         ctx, index = build_context()
         try:
-            from aica.audit import EventCategory, Outcome
-
-            ctx.audit.record(
-                category=EventCategory.APPROVAL,
-                action=f"decision on {decision_id}",
-                outcome=Outcome.SUCCESS if decision.approved else Outcome.PENDING_APPROVAL,
-                details={"approved": decision.approved, "note": decision.note},
-            )
+            entry = _queue().decide(decision_id, ctx.actor, decision.approved, decision.note)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ApprovalError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         finally:
             index.close()
-        return {"decision_id": decision_id, "approved": decision.approved, "recorded": True}
+        ctx.audit.record(
+            category=EventCategory.APPROVAL,
+            action=f"decision on {decision_id}: {entry.state.value}",
+            outcome=Outcome.SUCCESS if decision.approved else Outcome.PENDING_APPROVAL,
+            details={
+                "approved": decision.approved,
+                "note": decision.note,
+                "requested_by": entry.requested_by,
+                "decided_by": entry.decided_by,
+            },
+        )
+        payload: dict[str, Any] = json.loads(entry.model_dump_json())
+        return payload
 
     # ------------------------------------------------------------------ administration
     @app.get("/admin/controls", dependencies=guard)

@@ -23,6 +23,7 @@ Commands:
   aica models                        list approved models (MM-001/013)
   aica sessions [--resume ID]        session history (MEM-001/003)
   aica admin disable|enable|status   switch a tool/model/integration off now (SEC-007)
+  aica approvals list|approve|reject pending approvals (API-014, UX-008)
   aica policy                        show the effective policy
   aica audit [--actor-filter A]      search the audit trail (ADM-007)
   aica usage [--days N]              usage and activity reporting (ADM-006)
@@ -39,6 +40,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from aica import __version__
+from aica.admin.approval_queue import ApprovalError, ApprovalQueue
 from aica.admin.controls import ControlError, ControlPlane, TargetKind
 from aica.admin.quotas import report as quota_report
 from aica.admin.rbac import Permission
@@ -55,7 +57,12 @@ from aica.agent.events import AgentEvent, CallbackSink, EventType
 from aica.agent.loop import STATE_KEY, AgentLoop, AgentState
 from aica.agent.plan import PlanError
 from aica.agent.subagents import Delegation, SubagentRole
-from aica.approvals import AllowAllApprover, ApprovalRequired, ConsoleApprover
+from aica.approvals import (
+    AllowAllApprover,
+    ApprovalRequest,
+    ApprovalRequired,
+    ConsoleApprover,
+)
 from aica.audit import AuditLog, EventCategory, JsonlAuditSink, Outcome
 from aica.chat.assistant import CodingAssistant
 from aica.chat.commit_message import InvalidCommitMessage, suggest_commit_message
@@ -68,6 +75,7 @@ from aica.models.gateway import ModelGateway
 from aica.models.routing import ModelRouter, TaskKind
 from aica.policy import load_policy
 from aica.policy.budget import RunBudget
+from aica.policy.models import ActionCategory
 from aica.rag.index import RepositoryIndex
 from aica.review.findings import Severity, severity_rank
 from aica.review.reviewer import DEFAULT_CHECKS, CodeReviewer, ReviewCheck, ReviewRequest
@@ -1102,6 +1110,54 @@ def cmd_admin(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_approvals(args: argparse.Namespace) -> int:
+    """API-014 / UX-008: pending approvals, and deciding them.
+
+    The queue holds records; deciding one never runs the action. Re-running is the
+    caller's job and passes every gate again - an approval that executed would be a
+    second execution path with different guards from the first.
+    """
+    root = Path(args.workspace).resolve()
+    queue = ApprovalQueue(root)
+    policy = load_policy(args.policy)
+    try:
+        if args.approvals_command == "list":
+            entries = queue.all() if args.all else queue.pending()
+            if not entries:
+                print("no approvals pending")
+                return 0
+            # UX-008: categories first - they are the reason a human is being asked.
+            print(f"=== {len(entries)} APPROVAL REQUEST(S) ===")
+            for entry in entries:
+                print(f"  {entry.id}  {entry.describe()}")
+            return 0
+        if args.approvals_command == "request":
+            entry = queue.submit(
+                ApprovalRequest(
+                    action=" ".join(args.action),
+                    categories=tuple(ActionCategory(c) for c in (args.category or [])),
+                    tool=args.tool or "",
+                ),
+                requested_by=args.actor,
+            )
+            print(entry.id)
+            print(f"recorded; nothing has run (API-014): {entry.describe()}", file=sys.stderr)
+            return 0
+        decision = args.approvals_command == "approve"
+        entry = queue.decide(
+            args.id, policy.principal(args.actor), decision, " ".join(args.note or [])
+        )
+        print(f"{entry.id}: {entry.state.value} by {entry.decided_by}")
+        print("nothing was run; re-send the action to execute it", file=sys.stderr)
+        return 0
+    except PermissionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 5
+    except ApprovalError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+
+
 def cmd_policy(args: argparse.Namespace) -> int:
     ctx, _ = _context(args)
     p = ctx.policy
@@ -1492,6 +1548,32 @@ def build_parser() -> argparse.ArgumentParser:
     ap = admin_sub.add_parser("history", help="administrative changes, attributable (ADM-010)")
     ap.add_argument("--limit", type=int, default=50)
     ap.set_defaults(func=cmd_admin)
+
+    sp = sub.add_parser("approvals", help="pending approvals (API-014, UX-008)")
+    approvals_sub = sp.add_subparsers(dest="approvals_command", required=True)
+    ap = approvals_sub.add_parser("list", help="what is waiting for a human")
+    ap.add_argument("--all", action="store_true", help="include decided and expired requests")
+    ap.set_defaults(func=cmd_approvals)
+    ap = approvals_sub.add_parser("request", help="record a request for a human to decide")
+    ap.add_argument(
+        "action",
+        nargs="+",
+        help="what is being proposed; put it after -- when it starts with '-' "
+        "(aica approvals request --tool shell.run -- rm -rf build)",
+    )
+    ap.add_argument("--tool", help="the tool that would run it")
+    ap.add_argument(
+        "--category",
+        action="append",
+        choices=[c.value for c in ActionCategory],
+        help="why approval is needed (repeatable)",
+    )
+    ap.set_defaults(func=cmd_approvals)
+    for verb in ("approve", "reject"):
+        ap = approvals_sub.add_parser(verb, help=f"{verb} a pending request")
+        ap.add_argument("id")
+        ap.add_argument("--note", action="append")
+        ap.set_defaults(func=cmd_approvals)
 
     sp = sub.add_parser("policy", help="show the effective policy")
     sp.add_argument("--history", action="store_true", help="policy versions seen (ADM-008)")
