@@ -172,7 +172,7 @@ requirements are not lost. The BRD section is cited on each line.
 - [ ] MM-007 DeepSeek (default model configured; adapter verified against a mocked OpenAI-compatible API, NOT against live DeepSeek)
 - [x] MM-008 future-model adapter abstraction (`ModelAdapter` protocol; agent core depends on no model family)
 - [x] MM-009 automatic routing (`ModelRouter.select` builds the candidate order - named model, then rule, then default, then fallbacks - filters out anything that is not approved, enabled, capable of the work or large enough in context, and **records why each rejected candidate was rejected**; a model that cannot do the job is never tried in the hope it manages anyway)
-- [x] MM-010 fallback (`FallbackAdapter` is itself a `ModelAdapter`, so the agent core is unchanged; it falls back only on **unavailability** - 500/502/503/429/408, a transport failure, or a credential not configured on this machine - and never on a 400 or a malformed answer, because that would hide a real fault behind a second opinion. Streaming falls back only before the first chunk reaches the caller, so two models' answers are never spliced together. Verified against real HTTP responses through an httpx transport, including a stream that dies halfway)
+- [x] MM-010 fallback (`FallbackAdapter` is itself a `ModelAdapter`, so the agent core is unchanged; it falls back only on **unavailability** - 500/502/503/429/408, a transport failure, or a credential not configured on this machine - and never on a 400 or a malformed answer, because that would hide a real fault behind a second opinion. Streaming falls back only before the first chunk reaches the caller, so two models' answers are never spliced together. Verified against real HTTP responses through an httpx transport, including a stream that dies halfway. **Verified live** on 2026-09-25: with no DeepSeek or GLM key on the machine, a real `aica ask` skipped both and was answered by the local Ollama model, and the selection now says it came from fallback and audits what was skipped)
 - [x] MM-011 version pinning (`pinned = true` fixes the exact served version: a pinned entry may not name a moving alias such as `latest`/`preview`/`stable` - it is rejected at load time - and the router never substitutes another model for a pinned one, so a pin beats the fallback chain)
 - [x] MM-012 model/version recording (exact served model id recorded per response, per session turn and in audit events)
 - [x] MM-013 capability information (`ModelInfo` capabilities/context window; `aica models`)
@@ -281,6 +281,60 @@ For each completed phase, record:
 - important failures and fixes;
 - unresolved issues;
 - commit/branch if applicable.
+
+### Gemini and Groq free tiers — 2026-09-25 (Groq verified live, Gemini partly)
+- Configured `gemini-3.8-flash` (1M context), and on Groq `openai/gpt-oss-120b` and
+  `qwen/qwen3.8-27b` (131k each). Hosts `api.groq.com` and `generativelanguage.googleapis.com`
+  were allowlisted with the user's authorization. Keys come from `GEMINI_API_KEY` / `GROQ_API_KEY` in the
+  user's environment, and are never in the repository or in logs.
+- Fallback chain: Gemini, gpt-oss-120b, GLM, qwen3.8, local qwen2.5-coder, Kimi.
+- Live results (`test_live_model.py`, one run per model to spare free quota):
+  - **`groq-qwen3.8-27b`: 5/5** (2.7s), with `reasoning_effort = "none"`.
+  - **`groq-gpt-oss-120b`: 4/5.** Streaming and a real agent plan passed. The 16-token answer came back
+    **empty with `finish_reason=length`**: all 16 tokens went to reasoning, and "low" is the
+    least Groq accepts. It is a real model that needs a real budget, not a configuration error.
+  - **`gemini-3.8-flash`: 3/5.** Streaming passed (so the key, endpoint and allowlist work). The
+    chat call got 503 "high demand" and the plan got 429 after retries. A single probe of 3.8,
+    3.7 and 3.5 Flash each answered 503 "high demand": Google-side load, not configuration.
+    To be re-run later.
+- **Found against the live providers:** Groq's docs page still listed `llama-3.3-70b-versatile`,
+  but the account's `/models` did not, and a call answered 404 `model_not_found`. It was replaced
+  by `qwen/qwen3.8-27b`. From now on a model id is taken from the provider's `/models` with the real key, not from docs.
+- Open: an empty answer with `finish_reason=length` is returned to callers as an empty
+  string. It should probably be surfaced as "budget spent on reasoning" rather than read as an
+  answer (TEST-009). Not changed here.
+- Checks: ruff/format clean, mypy strict clean, **1094 passed, 2 skipped**.
+
+### Local model through Ollama, and fallback provenance — 2026-09-25
+- Config: `qwen2.5-coder-7b` approved in `config/models.toml` (Ollama 0.34.0 at
+  `http://127.0.0.1:11434/v1`, digest `dae161e27b0e`, no credential), and `127.0.0.1` added to
+  `[network].allowed_hosts`, both approved by the user. The model gateway has no loopback exemption, so
+  the endpoint is listed, not assumed. Fallback chain: GLM, then the local model, then Kimi.
+- **`context_window = 4096`, not the 32768 the weights support.** `/api/ps` shows Ollama serving
+  4096, and Ollama truncates a longer prompt silently. With the true figure the router skips
+  the local model for planning and review (their `min_context` is 32000) and records why.
+  Pinned by `test_the_local_model_is_a_fallback_only_for_work_that_fits_its_served_window`.
+  Consequence: **`aica task` cannot run on this model as configured.** Serving 32k needs
+  `OLLAMA_CONTEXT_LENGTH` on the server, with both values raised together.
+- Live results: `test_live_model.py` **5 passed** against the local model (109s, CPU only: a
+  real answer, streaming, capabilities, a real agent plan, the allowlist). The live test now
+  reads the credential variable from the model's registry entry, so a keyless model needs
+  only the opt-in.
+- Real MM-010 run: no keys set, `aica ask` skipped DeepSeek and GLM and was answered by the
+  local model in 54s. **Answer quality was poor**: it described `is_local` as checking "the
+  network environment", but the function checks whether a host is loopback. That is a
+  quality limit of a 7B model on 4096 tokens, not a pass on quality.
+- **A provenance defect found by that run (MM-012).** When the rule's model was skipped, the
+  selection still gave "routing rule for chat" as its reason, and the `route` audit event did
+  not record what was skipped. So the banner and the audit trail said the local model was chosen by
+  the rule. Fixed: the reason is now `fallback (MM-010): <model> skipped - <why>`, and the
+  event carries `skipped`. Pinned by
+  `test_a_selection_made_by_fallback_says_so_and_audits_what_it_skipped`, which fails on the old
+  code.
+- Still not closed: "Same task can run against another approved model" (Business
+  Acceptance). The local model's 4096 window keeps it off agent tasks, and GLM's free tier
+  has not completed one.
+- Checks: ruff/format clean, mypy strict clean, **1094 passed, 2 skipped**, 91% coverage.
 
 ### MM-005 GLM live, and the first real agent runs — 2026-09-25
 - Config: `glm-4.7-flash` approved in `config/models.toml` (Z.ai free tier,
