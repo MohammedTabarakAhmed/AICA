@@ -282,6 +282,21 @@ For each completed phase, record:
 - unresolved issues;
 - commit/branch if applicable.
 
+### Continuous integration (GitHub Actions) — 2026-09-25
+- `.github/workflows/ci.yml`: ruff, format check, mypy strict and pytest with coverage on every
+  push to `main` and every pull request. Ubuntu with Python 3.12 (the floor) and 3.14, and
+  Windows with 3.14. Linux starts a disposable PostgreSQL 17 container. JDK 21 and Node 24 are
+  installed, Chromium is installed for Playwright, and skip reasons are printed (`-rs`).
+- The first run failed, which was useful. It found a **real web-app bug (UX-001)**: the page only
+  streamed events for queued or running tasks, so a task that finished before the page asked
+  showed an empty Progress list. The page now always streams, because the server replays
+  history, and it redraws only for tasks that were still running. That keeps the change
+  checkboxes intact. It also found that the runners' JDK 17 and Node 20 were too old.
+- Result on PR #3, run 36118453230: all three jobs green. Ubuntu 3.12 and 3.14: **1095 passed,
+  1 skipped** (live model only; PostgreSQL ran against a real server). Windows 3.14: 1081
+  passed, 2 skipped (live model, PostgreSQL).
+- This is the pipeline INT-005 will build on. INT-005 itself stays open.
+
 ### LANG-002 Java, LANG-004 Go, LANG-005 Rust — 2026-09-25
 - Toolchains installed with the user's approval: Microsoft OpenJDK 21.0.12, Go 1.27.0 and
   Rust 1.98.1 (GNU) via winget; Apache Maven 3.9.16 from dlcdn.apache.org, SHA-512 verified
