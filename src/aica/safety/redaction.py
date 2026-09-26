@@ -25,6 +25,8 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     ),
     ("slack-token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b")),
+    # INT-004: Socket Mode app-level tokens (xapp-1-A0...-...), distinct from the xox* family.
+    ("slack-app-token", re.compile(r"\bxapp-\d-[A-Za-z0-9-]{10,}\b")),
     ("openai-style-key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")),
     ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")),
