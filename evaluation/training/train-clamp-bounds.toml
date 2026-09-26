@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-clamp-bounds"
+version = 1
+kind = "agent"
+description = "clamp() returns the wrong bound and must reject low > high"
+tags = ["python", "bugfix", "validation"]
+task = "The test suite fails. Fix src/numbers.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/numbers.py" = "\"\"\"Numeric helpers.\"\"\"\n\n\ndef clamp(value: float, low: float, high: float) -> float:\n    \"\"\"Limit value to the range [low, high].\"\"\"\n    if value < low:\n        return high\n    if value > high:\n        return low\n    return value\n"
+"tests/test_numbers.py" = "import pytest\n\nfrom src.numbers import clamp\n\n\ndef test_inside() -> None:\n    assert clamp(5, 0, 10) == 5\n\n\ndef test_below_and_above() -> None:\n    assert clamp(-1, 0, 10) == 0\n    assert clamp(11, 0, 10) == 10\n\n\ndef test_rejects_inverted_range() -> None:\n    with pytest.raises(ValueError):\n        clamp(1, 10, 0)\n"

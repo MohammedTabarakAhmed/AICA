@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-slugify-spaces"
+version = 1
+kind = "agent"
+description = "slugify() must collapse runs of spaces and drop punctuation"
+tags = ["python", "bugfix", "strings"]
+task = "The test suite fails. Fix src/text.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/text.py" = "\"\"\"Text helpers.\"\"\"\n\n\ndef slugify(title: str) -> str:\n    \"\"\"Lower-case, hyphen-separated identifier for a title.\"\"\"\n    return title.lower().replace(\" \", \"-\")\n"
+"tests/test_text.py" = "from src.text import slugify\n\n\ndef test_simple() -> None:\n    assert slugify(\"Hello World\") == \"hello-world\"\n\n\ndef test_collapses_spaces() -> None:\n    assert slugify(\"  Hello   World  \") == \"hello-world\"\n\n\ndef test_drops_punctuation() -> None:\n    assert slugify(\"Hello, World!\") == \"hello-world\"\n"

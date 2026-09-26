@@ -1529,6 +1529,56 @@ def cmd_lease(args: argparse.Namespace) -> int:
     return 0
 
 
+def _adapt_practice(args: argparse.Namespace, ctx: ToolContext) -> int:
+    """BRD 13: produce training runs - real, and kept only when independently verified."""
+    from aica.adaptation.practice import DEFAULT_TRAINING_DIR, check_disjoint, run_practice
+    from aica.evaluation.tasks import SuiteError, TaskSuite, load_suite
+
+    ctx.actor.require(Permission.ADMINISTER, "produce training data")
+    try:
+        suite = load_suite(args.tasks or DEFAULT_TRAINING_DIR, name="training")
+        check_disjoint(suite, load_suite())
+    except SuiteError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    tasks = [t for t in suite.tasks if not args.only or t.id in args.only]
+    if args.limit is not None:
+        tasks = tasks[: args.limit]
+    try:
+        gateway = _gateway(args, ctx)
+        router = ModelRouter(gateway, gateway.routing, audit=ctx.audit)
+        router.select(TaskKind.PLANNING, requested=args.model)  # fail now, not per task
+    except (ModelError, PermissionError) as exc:
+        print(f"model unavailable: {exc}", file=sys.stderr)
+        return 3
+
+    def show(o: Any) -> None:
+        verdict = "kept" if o.session_id else ("FAILED" if not o.passed else "not kept")
+        print(
+            f"{o.task:<32} {verdict:<8} {o.seconds:6.0f}s {o.tokens:>8,} tok "
+            f"{o.calls:>3} calls  {o.model}",
+            flush=True,
+        )
+        if not o.passed:
+            print(f"    {o.detail[:200]}", flush=True)
+
+    report = run_practice(
+        ctx.workspace.root,
+        TaskSuite(name=suite.name, tasks=tasks, source=suite.source),
+        lambda: router.select(TaskKind.PLANNING, requested=args.model).adapter,
+        ctx.policy,
+        ctx.actor.name,
+        keep_workspaces=args.keep_workspaces,
+        on_outcome=show,
+    )
+    print(report.summary())
+    if report.kept:
+        print(
+            "next: `aica adapt collect`, then review with `aica adapt candidates`", file=sys.stderr
+        )
+    return 0
+
+
 def cmd_adapt(args: argparse.Namespace) -> int:
     """BRD 13: collect, approve, build, plan, register, gate, promote and roll back."""
     ctx, _ = _context(args)
@@ -1537,6 +1587,8 @@ def cmd_adapt(args: argparse.Namespace) -> int:
     who = ctx.actor
     command = args.adapt_command
     try:
+        if command == "practice":
+            return _adapt_practice(args, ctx)
         if command == "collect":
             counts = CandidateStore(root).collect(policy, who)
             print(
@@ -2101,6 +2153,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("adapt", help="fine-tuning data, adapters and promotion (BRD 13)")
     adapt = sp.add_subparsers(dest="adapt_command", required=True)
+    ap = adapt.add_parser(
+        "practice", help="run the agent on training tasks; keep independently verified runs"
+    )
+    ap.add_argument("--tasks", default=None, help="training tasks (default: evaluation/training)")
+    ap.add_argument("--only", action="append", help="run only this task id (repeatable)")
+    ap.add_argument("--limit", type=int, default=None, help="run at most N tasks")
+    ap.add_argument("--model", default=None, help="pin a model (default: the routing policy)")
+    ap.add_argument("--keep-workspaces", action="store_true", help="keep task directories")
+    ap.set_defaults(func=cmd_adapt)
     ap = adapt.add_parser("collect", help="screen persisted agent runs into candidates")
     ap.set_defaults(func=cmd_adapt)
     ap = adapt.add_parser("candidates", help="list training candidates")
