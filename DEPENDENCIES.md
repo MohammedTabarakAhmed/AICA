@@ -157,6 +157,11 @@ Entry 011).
   tools and policy already define, so the API contract cannot drift from the tool contracts,
   and because streaming responses cover API-003 without extra machinery.
 
+### Added for INT-004 Slack (2026-09-26, see `.claude-progress.md` Entry 039)
+| Package | Range | Purpose | Used in | Notes |
+|---|---|---|---|---|
+| slack_sdk | >=3.44,<4 (installed 3.44.1) | Socket Mode client only: the outbound WebSocket Slack delivers button presses and mentions over | `aica.integrations.slack.socket_client` | MIT; **no dependencies of its own**. Optional `slack` extra (`pip install -e ".[slack]"`), imported lazily, so only `aica slack run` needs it. The Web API calls (post, update, ephemeral) use the existing httpx, so they share a mockable transport with the rest of the code. The WebSocket host Slack returns is checked against `[network]` on every (re)connect. Verified: 32 tests, including the host check against the real `SocketModeClient` class |
+
 ### Still not chosen (deferred to their phases)
 Web and IDE front-end frameworks (Phase 4 INT-001/003), the identity provider for RBAC, and
 the durable store for audit/sessions at multi-user scale (Phase 4).
