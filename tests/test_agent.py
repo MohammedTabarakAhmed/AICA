@@ -616,6 +616,57 @@ def test_loop_never_raises_on_tool_explosion(workspace: Path) -> None:
     assert report.outcome() in {"INCOMPLETE", "CANCELLED"}
 
 
+def _commit_all(root: Path) -> None:
+    import subprocess
+
+    for args in (
+        ["init", "-q", "-b", "work"],
+        ["config", "user.email", "t@example.com"],
+        ["config", "user.name", "t"],
+        ["add", "."],
+        ["commit", "-q", "-m", "init"],
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+
+def test_a_developer_change_stops_the_agent_with_a_report_not_a_crash(workspace: Path) -> None:
+    """Found in a live run on Groq: GIT-010's refusal escaped the loop as a traceback, so the
+    run ended with no report at all."""
+    _commit_all(workspace)
+    (workspace / "src" / "app.py").write_text("developer's work in progress\n", encoding="utf-8")
+    write = {
+        "intent": "fix",
+        "tool": "fs.write",
+        "arguments": {"path": "src/app.py", "content": "x"},
+    }
+    report = AgentLoop(ScriptedAdapter([plan_json(write)]), default_registry()).run(
+        "fix it", make_ctx(workspace)
+    )
+    assert report.succeeded is False
+    assert any("uncommitted developer changes" in u for u in report.unresolved)
+    assert "developer" in (workspace / "src" / "app.py").read_text()
+
+
+def test_the_agent_can_correct_its_own_edit_in_a_repository(workspace: Path) -> None:
+    """The same live run: after its first write the agent could not rewrite its own file."""
+    _commit_all(workspace)
+    first = {
+        "intent": "try",
+        "tool": "fs.write",
+        "arguments": {"path": "src/app.py", "content": "a"},
+    }
+    second = {
+        "intent": "fix",
+        "tool": "fs.write",
+        "arguments": {"path": "src/app.py", "content": "b"},
+    }
+    report = AgentLoop(ScriptedAdapter([plan_json(first, second)]), default_registry()).run(
+        "edit twice", make_ctx(workspace)
+    )
+    assert not report.unresolved or all("uncommitted" not in u for u in report.unresolved)
+    assert (workspace / "src" / "app.py").read_text() == "b"
+
+
 # ---------------------------------------------------------------- helpers
 
 

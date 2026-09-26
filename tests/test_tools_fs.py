@@ -239,6 +239,61 @@ def test_write_refuses_to_clobber_uncommitted_user_changes(git_workspace: Path) 
     assert "developer" in (git_workspace / "src" / "app.py").read_text()
 
 
+def test_a_run_may_keep_working_on_a_file_it_changed_itself(git_workspace: Path) -> None:
+    """Found in a live run: the agent wrote a file, the write made it dirty, and GIT-010 then
+    refused the agent's own correction as if it were a developer's work in progress."""
+    ctx = make_ctx(git_workspace, approver=DenyAllApprover())  # no approval is needed for this
+    reg = default_registry()
+    reg.call("fs.write", {"path": "src/app.py", "content": "first attempt\n"}, ctx)
+    reg.call("fs.write", {"path": "src/app.py", "content": "second attempt\n"}, ctx)
+    reg.call("fs.edit", {"path": "src/app.py", "old_text": "second", "new_text": "third"}, ctx)
+    assert (git_workspace / "src" / "app.py").read_text() == "third attempt\n"
+
+
+def test_a_file_the_run_wrote_is_protected_again_once_someone_else_changes_it(
+    git_workspace: Path,
+) -> None:
+    """The exemption is for the run's own content, checked by hash, not for the path."""
+    ctx = make_ctx(git_workspace)
+    reg = default_registry()
+    reg.call("fs.write", {"path": "src/app.py", "content": "agent version\n"}, ctx)
+    (git_workspace / "src" / "app.py").write_text("developer edits it mid-run\n", encoding="utf-8")
+    with pytest.raises(UserChangesPresent):
+        reg.call("fs.write", {"path": "src/app.py", "content": "agent again\n"}, ctx)
+    assert "developer" in (git_workspace / "src" / "app.py").read_text()
+
+
+def test_another_run_does_not_inherit_the_exemption(git_workspace: Path) -> None:
+    """What one run wrote is, to the next run, uncommitted work it did not make."""
+    reg = default_registry()
+    reg.call("fs.write", {"path": "src/app.py", "content": "run one\n"}, make_ctx(git_workspace))
+    with pytest.raises(UserChangesPresent):
+        reg.call(
+            "fs.write", {"path": "src/app.py", "content": "run two\n"}, make_ctx(git_workspace)
+        )
+
+
+def test_a_moved_or_deleted_file_is_tracked_under_its_new_state(git_workspace: Path) -> None:
+    ctx = make_ctx(git_workspace)
+    reg = default_registry()
+    reg.call("fs.write", {"path": "src/new.py", "content": "x = 1\n"}, ctx)
+    reg.call("fs.move", {"source": "src/new.py", "destination": "src/moved.py"}, ctx)
+    reg.call("fs.write", {"path": "src/moved.py", "content": "x = 2\n"}, ctx)  # still ours
+    assert (git_workspace / "src" / "moved.py").as_posix() in ctx.own_writes
+    assert (git_workspace / "src" / "new.py").as_posix() not in ctx.own_writes
+    reg.call("fs.delete", {"path": "src/moved.py"}, ctx)
+    assert (git_workspace / "src" / "moved.py").as_posix() not in ctx.own_writes
+
+
+def test_git_guard_refusals_are_permission_errors() -> None:
+    """So the agent stops with a report, the API answers 409 and the CLI exits cleanly; as a
+    RuntimeError it crashed a live agent run with a traceback."""
+    from aica.workspace import ProtectedBranch
+
+    assert issubclass(UserChangesPresent, PermissionError)
+    assert issubclass(ProtectedBranch, PermissionError)
+
+
 def test_clobbering_is_possible_with_explicit_authorization(git_workspace: Path) -> None:
     (git_workspace / "src" / "app.py").write_text("developer's work\n", encoding="utf-8")
     approver = CallbackApprover(lambda r: True)

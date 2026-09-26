@@ -226,3 +226,23 @@ def test_test_tool_reports_failures_with_locations(tmp_path: Path) -> None:
     assert not res.ok and res.data["failed"] == 1
     assert res.data["failures"][0]["test"] == "test_bad"
     assert "test_bad" in res.data["analysis"]
+
+
+def test_a_run_where_no_tests_ran_shows_why_and_the_discovered_command(tmp_path: Path) -> None:
+    """Found live: `python -m pytest` hit an interpreter without pytest, the tool said only
+    "0 passed, 0 failed", and the model guessed its way to a `pip install`."""
+    import sys
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    pass\n", encoding="utf-8")
+    broken = (
+        f'"{sys.executable}" -c "import sys; '
+        "sys.stderr.write('No module named pytest'); sys.exit(1)\""
+    )
+    res = default_registry().call(
+        "test.run", {"command": broken, "kind": "unit"}, make_ctx(tmp_path)
+    )
+    assert not res.ok
+    assert "No tests ran" in res.output
+    assert "No module named pytest" in res.output
+    assert "omit `command` to use it" in res.output  # the discovered command is offered
