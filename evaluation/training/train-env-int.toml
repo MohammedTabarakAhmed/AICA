@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-env-int"
+version = 1
+kind = "agent"
+description = "get_int() crashes on a missing key and hides the bad key's name"
+tags = ["python", "bugfix", "config"]
+task = "The test suite fails. Fix src/settings.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/settings.py" = "\"\"\"Settings.\"\"\"\n\n\ndef get_int(env: dict[str, str], key: str, default: int) -> int:\n    \"\"\"An integer setting; missing gives default; a bad value is a ValueError naming key.\"\"\"\n    return int(env[key])\n"
+"tests/test_settings.py" = "import pytest\n\nfrom src.settings import get_int\n\n\ndef test_present() -> None:\n    assert get_int({\"PORT\": \"80\"}, \"PORT\", 8080) == 80\n\n\ndef test_missing() -> None:\n    assert get_int({}, \"PORT\", 8080) == 8080\n\n\ndef test_bad_names_key() -> None:\n    with pytest.raises(ValueError, match=\"PORT\"):\n        get_int({\"PORT\": \"abc\"}, \"PORT\", 8080)\n"

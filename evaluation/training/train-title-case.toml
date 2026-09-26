@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-title-case"
+version = 1
+kind = "agent"
+description = "title_case() capitalises letters after apostrophes"
+tags = ["python", "bugfix", "strings"]
+task = "The test suite fails. Fix src/titles.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/titles.py" = "\"\"\"Title helpers.\"\"\"\n\n\ndef title_case(text: str) -> str:\n    \"\"\"Capitalise the first letter of every space-separated word.\"\"\"\n    return text.title()\n"
+"tests/test_titles.py" = "from src.titles import title_case\n\n\ndef test_words() -> None:\n    assert title_case(\"hello world\") == \"Hello World\"\n\n\ndef test_apostrophe() -> None:\n    assert title_case(\"it's fine\") == \"It's Fine\"\n\n\ndef test_keeps_spacing() -> None:\n    assert title_case(\"a  b\") == \"A  B\"\n"

@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-binary-search"
+version = 1
+kind = "agent"
+description = "search() misses the last candidate"
+tags = ["python", "bugfix", "algorithms"]
+task = "The test suite fails. Fix src/searching.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/searching.py" = "\"\"\"Searching.\"\"\"\n\n\ndef search(items: list[int], target: int) -> int:\n    \"\"\"Index of target in the sorted list, or -1.\"\"\"\n    lo, hi = 0, len(items) - 1\n    while lo < hi:\n        mid = (lo + hi) // 2\n        if items[mid] == target:\n            return mid\n        if items[mid] < target:\n            lo = mid + 1\n        else:\n            hi = mid - 1\n    return -1\n"
+"tests/test_searching.py" = "from src.searching import search\n\n\ndef test_single() -> None:\n    assert search([5], 5) == 0\n\n\ndef test_last() -> None:\n    assert search([1, 3, 5, 7], 7) == 3\n\n\ndef test_missing() -> None:\n    assert search([1, 3], 2) == -1\n    assert search([], 1) == -1\n"

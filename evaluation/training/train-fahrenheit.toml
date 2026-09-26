@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-fahrenheit"
+version = 1
+kind = "agent"
+description = "to_fahrenheit() uses the inverse formula"
+tags = ["python", "bugfix", "math"]
+task = "The test suite fails. Fix src/temperature.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/temperature.py" = "\"\"\"Temperature.\"\"\"\n\n\ndef to_fahrenheit(celsius: float) -> float:\n    \"\"\"Degrees Celsius in Fahrenheit.\"\"\"\n    return celsius * 5 / 9 + 32\n"
+"tests/test_temperature.py" = "from src.temperature import to_fahrenheit\n\n\ndef test_boiling() -> None:\n    assert to_fahrenheit(100) == 212\n\n\ndef test_minus_forty() -> None:\n    assert to_fahrenheit(-40) == -40\n"

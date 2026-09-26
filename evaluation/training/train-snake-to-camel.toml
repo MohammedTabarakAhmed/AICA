@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-snake-to-camel"
+version = 1
+kind = "agent"
+description = "snake_to_camel() drops underscores without capitalising"
+tags = ["python", "bugfix", "strings"]
+task = "The test suite fails. Fix src/casing.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/casing.py" = "\"\"\"Casing.\"\"\"\n\n\ndef snake_to_camel(name: str) -> str:\n    \"\"\"user_id -> userId.\"\"\"\n    return name.replace(\"_\", \"\")\n"
+"tests/test_casing.py" = "from src.casing import snake_to_camel\n\n\ndef test_convert() -> None:\n    assert snake_to_camel(\"user_id\") == \"userId\"\n    assert snake_to_camel(\"a_b_c\") == \"aBC\"\n\n\ndef test_plain() -> None:\n    assert snake_to_camel(\"plain\") == \"plain\"\n"

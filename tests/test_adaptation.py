@@ -172,6 +172,27 @@ def test_a_restricted_path_excludes_the_run() -> None:
     assert any("restricted path config/.env" in r for r in verdict.safety)
 
 
+def test_overriding_the_uncommitted_change_protection_excludes_the_run() -> None:
+    step = Step("fix", "fs.edit", {"path": "src/a.py", "allow_dirty": True}, "succeeded")
+    verdict = screen(_trajectory(steps=(step,)), AdaptationPolicy())
+    assert any("uncommitted-change protection" in r for r in verdict.safety)
+
+
+def test_a_filled_step_keeps_its_plan_and_request_and_its_request_is_screened() -> None:
+    step = Step(
+        "fix",
+        "fs.write",
+        {"path": "src/a.py", "content": "x = 1\n"},
+        "succeeded",
+        planned_arguments={"path": "src/a.py"},
+        fill_prompt="results: api_key = 'sk-live-0123456789abcdefghijklmnop'",
+    )
+    trajectory = _trajectory(steps=(step,))
+    assert Trajectory.from_json(trajectory.to_json()) == trajectory
+    verdict = screen(trajectory, AdaptationPolicy())
+    assert any("secret-like" in r for r in verdict.safety)
+
+
 def test_a_destructive_command_excludes_the_run() -> None:
     step = Step("clean", "shell.run", {"command": "rm -rf build"}, "succeeded")
     verdict = screen(_trajectory(steps=(step,)), AdaptationPolicy())
@@ -281,7 +302,7 @@ def _approved(tmp_path: Path, *tasks: str, policy: Policy | None = None) -> Poli
 def test_a_dataset_is_versioned_by_content_and_written_once(tmp_path: Path) -> None:
     policy = _approved(tmp_path, "first", "second")
     manifest = build_dataset(tmp_path, policy, policy.principal("admin"))
-    assert manifest.examples == 2 and manifest.format == "chat-sft-v1"
+    assert manifest.examples == 2 and manifest.format == "chat-sft-v2"
     again = build_dataset(tmp_path, policy, policy.principal("admin"))
     assert again.version == manifest.version  # same examples, same dataset
     lines = (

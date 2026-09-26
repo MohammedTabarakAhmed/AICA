@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-human-bytes"
+version = 1
+kind = "agent"
+description = "human_bytes() uses 1000 instead of 1024"
+tags = ["python", "bugfix", "formatting"]
+task = "The test suite fails. Fix src/sizes.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/sizes.py" = "\"\"\"Sizes.\"\"\"\n\n\ndef human_bytes(size: int) -> str:\n    \"\"\"500 -> \"500 B\", 1536 -> \"1.5 KB\", 1048576 -> \"1.0 MB\" (binary units).\"\"\"\n    if size < 1000:\n        return f\"{size} B\"\n    if size < 1000**2:\n        return f\"{size / 1000:.1f} KB\"\n    return f\"{size / 1000**2:.1f} MB\"\n"
+"tests/test_sizes.py" = "from src.sizes import human_bytes\n\n\ndef test_bytes() -> None:\n    assert human_bytes(500) == \"500 B\"\n\n\ndef test_kb() -> None:\n    assert human_bytes(1536) == \"1.5 KB\"\n    assert human_bytes(1000) == \"1000 B\"\n\n\ndef test_mb() -> None:\n    assert human_bytes(5 * 1024**2) == \"5.0 MB\"\n"

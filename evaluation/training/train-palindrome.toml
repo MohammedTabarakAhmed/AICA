@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-palindrome"
+version = 1
+kind = "agent"
+description = "is_palindrome() must ignore case and punctuation"
+tags = ["python", "bugfix", "strings"]
+task = "The test suite fails. Fix src/palindromes.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/palindromes.py" = "\"\"\"Palindromes.\"\"\"\n\n\ndef is_palindrome(text: str) -> bool:\n    \"\"\"True when the letters and digits read the same both ways, ignoring case.\"\"\"\n    return text == text[::-1]\n"
+"tests/test_palindromes.py" = "from src.palindromes import is_palindrome\n\n\ndef test_case() -> None:\n    assert is_palindrome(\"Racecar\")\n\n\ndef test_punctuation() -> None:\n    assert is_palindrome(\"A man, a plan, a canal: Panama\")\n\n\ndef test_not() -> None:\n    assert not is_palindrome(\"hello\")\n"
