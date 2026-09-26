@@ -1,0 +1,79 @@
+# INT-005: the agent takes part in an approved review workflow. On every pull request it
+# reviews the change (REV-001..007) and keeps one comment on the PR current with the result.
+#
+# Why each choice:
+# - `pull_request`, never `pull_request_target`: a fork's code must never run with this
+#   repository's secrets. For fork PRs GitHub withholds secrets and gives a read-only token,
+#   so the post step is skipped for them rather than failing.
+# - Least privilege: read the code, write PR comments. Nothing else.
+# - `--ci` approves exactly two things - the connector's token and the external post, for
+#   repo.comment only - and denies anything else that asks.
+# - The review is advisory: this job does not fail on findings (`--fail-on critical` only
+#   marks the run), so a person decides; the tests gate is ci.yml.
+# - Model keys are optional repository secrets. Without one, the static checks still run
+#   and the comment says the review was static-only.
+name: Agent review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: agent-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the review diffs against the base branch
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python -m pip install -e .
+
+      - name: Review and post
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          # Passed through env, never spliced into the script: event values are not shell code.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          post=()
+          if [ "$SAME_REPO" = "true" ]; then
+            post=(--post-to-pr "$PR_NUMBER")
+          else
+            echo "fork pull request: reviewing without posting (no write token for forks)"
+          fi
+          set +e
+          aica --actor ci-review review --ci --base "origin/$BASE_REF" \
+            --fail-on critical "${post[@]}"
+          code=$?
+          set -e
+          # 0 clean; 2 critical findings (advisory here: a person decides); 6 incomplete - the
+          # posted comment says so, e.g. no model key configured, so it is a warning; 7 the
+          # review could not be posted, which is a real failure of this workflow.
+          case "$code" in
+            0) ;;
+            2) echo "::warning::critical findings reported on the pull request" ;;
+            6) echo "::warning::review incomplete (see the comment; is a model key configured?)" ;;
+            *) echo "::error::review not posted (exit $code)"; exit 1 ;;
+          esac

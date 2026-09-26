@@ -78,6 +78,12 @@ class ToolContext:
     # the file is protected like any other developer change. Shared (not copied) with
     # subagents, whose context is a shallow ``replace`` of this one.
     own_writes: dict[str, str] = field(default_factory=dict)
+    # INT-006. Overrides config/repositories.toml, like ``databases_file``; a connector is
+    # always selected by name from a configuration file, never supplied by a call.
+    repositories_file: str | None = None
+    # Test seam for the repository connector's HTTP client (an ``httpx.BaseTransport``).
+    # None in real use: requests go to the connector's configured API host.
+    http_transport: Any = None
 
     @classmethod
     def for_workspace(

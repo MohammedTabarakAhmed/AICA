@@ -1,0 +1,15 @@
+# Approved repository connectors (INT-006). See repositories.toml.example for the rules.
+# This project's own GitHub repository, approved by the project owner on 2026-09-25.
+# No credential is stored here: `secret` names the SEC-004 secret in config/policy.toml.
+
+default = "origin"
+
+[[connectors]]
+name = "origin"
+provider = "github"
+api_url = "https://api.github.com"
+repository = "MohammedTabarakAhmed/Enhanced_AI_Coding"
+secret = "github_token"
+permissions = ["read", "pull_request", "comment"]
+enabled = true
+description = "this project's GitHub repository"

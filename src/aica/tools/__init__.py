@@ -14,6 +14,7 @@ from aica.tools.filesystem import FILESYSTEM_TOOLS, unified_diff
 from aica.tools.git_tool import GIT_TOOLS
 from aica.tools.rag_tool import RAG_TOOLS, format_results
 from aica.tools.registry import ToolRegistry
+from aica.tools.repository_tool import REPOSITORY_TOOLS
 from aica.tools.shell import SHELL_TOOLS, ExecutionResult, build_environment, execute
 from aica.tools.testing_tool import TESTING_TOOLS
 
@@ -25,6 +26,8 @@ _GROUPS: list[tuple[str, list[Tool]]] = [
     ("rag", RAG_TOOLS),
     ("browser", BROWSER_TOOLS),
     ("database", DATABASE_TOOLS),
+    # INT-006. Off unless [autonomy].allowed_tools lists "repository": a third-party service.
+    ("repository", REPOSITORY_TOOLS),
 ]
 
 
@@ -42,6 +45,7 @@ __all__ = [
     "FILESYSTEM_TOOLS",
     "GIT_TOOLS",
     "RAG_TOOLS",
+    "REPOSITORY_TOOLS",
     "SESSIONS",
     "SHELL_TOOLS",
     "TESTING_TOOLS",

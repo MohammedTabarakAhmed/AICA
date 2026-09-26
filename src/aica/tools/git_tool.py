@@ -480,6 +480,73 @@ class GitClone(Tool):
         )
 
 
+# ------------------------------------------------------------------ INT-006
+
+
+def _remote_host(url: str) -> str:
+    """Host of a remote URL: https://host/..., ssh://git@host/..., or scp-style git@host:path.
+
+    A local path (another directory, a bare repository on disk) has no host: pushing there
+    never leaves the machine.
+    """
+    from urllib.parse import urlparse
+
+    if "://" in url:
+        return (urlparse(url).hostname or "").lower()
+    if "@" in url.split(":", 1)[0] and ":" in url:
+        return url.split("@", 1)[1].split(":", 1)[0].lower()
+    return ""
+
+
+class GitPush(Tool):
+    name: ClassVar[str] = "git.push"
+    mutating: ClassVar[bool] = True
+    description: ClassVar[str] = (
+        "Push the current branch to a remote (EXTERNAL; approval required). Never forces; "
+        "protected branches are refused, not approved."
+    )
+
+    class Args(_Args):
+        remote: str = Field(default="origin", pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+        set_upstream: bool = True
+
+    def run(self, args: BaseModel, ctx: ToolContext) -> ToolResult:
+        assert isinstance(args, self.Args)
+        from aica.workspace import ProtectedBranch
+
+        _require_repo(ctx)
+        assert ctx.git is not None
+        branch = ctx.git.current_branch()
+        if not branch:
+            raise ToolError("detached HEAD: there is no branch to push")
+        if ctx.policy.git.is_protected(branch):
+            # GIT-007: a protected branch changes through a reviewed merge, not a push.
+            raise ProtectedBranch(
+                f"branch {branch!r} is protected; push a working branch and open a pull request"
+            )
+        url = _git(ctx, "remote", "get-url", args.remote).strip()
+        host = _remote_host(url)
+        if host and not ctx.policy.network.is_host_allowed(host):
+            raise PermissionError(f"remote host {host!r} not allowed by network policy (SAFE-005)")
+        ahead = _git(ctx, "log", "--oneline", f"{args.remote}/{branch}..{branch}", check=False)
+        ctx.require_approval(
+            self.name,
+            f"push {branch} to {args.remote} ({host or 'local path'})",
+            [ActionCategory.EXTERNAL],
+            remote=args.remote,
+            branch=branch,
+            commits=ahead[:4000],
+        )
+        refspec = f"refs/heads/{branch}:refs/heads/{branch}"
+        push = ["push", "--porcelain"] + (["--set-upstream"] if args.set_upstream else [])
+        out = _git(ctx, *push, args.remote, refspec)
+        _record(ctx, f"push {branch}", remote=args.remote, host=host)
+        return ToolResult(
+            output=f"pushed {branch} to {args.remote}\n{out.strip()}",
+            data={"branch": branch, "remote": args.remote, "host": host},
+        )
+
+
 GIT_TOOLS: list[Tool] = [
     GitStatus(),
     GitLog(),
@@ -492,4 +559,5 @@ GIT_TOOLS: list[Tool] = [
     GitDiscardChanges(),
     GitPullRequestContent(),
     GitClone(),
+    GitPush(),
 ]
