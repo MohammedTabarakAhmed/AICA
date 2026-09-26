@@ -1,0 +1,45 @@
+# Slack collaboration integration (INT-004). Copy to config/slack.toml and fill in the IDs.
+#
+# What it does, over Socket Mode (an outbound WebSocket - no public URL is needed):
+#   * posts every pending approval request to `channel` with Approve / Reject buttons;
+#   * posts a message when an agent task finishes (from any surface: CLI, web, VS Code);
+#   * answers questions about the repository when mentioned in `channel`, or in a DM.
+#
+# What it cannot do: deciding an approval never runs anything (API-014) - the requester
+# re-sends the action and it passes every gate again. Only mapped users can decide or ask.
+#
+# No credential is stored here. The two names below are SEC-004 secrets declared in
+# config/policy.toml [[secrets.definitions]]; their values come from the environment
+# (SLACK_BOT_TOKEN = xoxb-..., SLACK_APP_TOKEN = xapp-...). The network policy must allow
+# slack.com and wss-primary.slack.com (or *.slack.com).
+#
+# Creating the Slack app: api.slack.com/apps > Create New App > From an app manifest, and
+# paste config/slack-app-manifest.json (least privilege: chat:write, app_mentions:read,
+# im:history; Socket Mode, so no request URL).
+#
+# Commands:  aica slack check [--post]   verify tokens, channel and mapping
+#            aica slack sync             post pending approvals / finished tasks once
+#            aica slack run              run the bridge until Ctrl+C
+# Kill switch (SEC-007):  aica admin disable integration slack
+
+enabled = false
+api_url = "https://slack.com/api"
+bot_token_secret = "slack_bot_token"
+app_token_secret = "slack_app_token"
+
+# The channel ID (right-click the channel > View channel details > bottom of the About tab).
+# IDs, not names: a channel can be renamed, an ID cannot. Invite the bot to it: /invite @aica
+channel = "C0123456789"
+
+post_approvals = true
+post_task_finished = true
+questions = true
+direct_messages = true
+poll_seconds = 5
+
+# Slack member ID -> principal name (the name RBAC bindings in config/policy.toml use).
+# Find a member ID in Slack: click the person > View full profile > ... > Copy member ID.
+# Anyone not listed here is refused, and the attempt is audited. With [rbac] enabled, only
+# principals holding the `approver` role can decide, and never their own request (SEC-006).
+[users]
+# U0123456789 = "alice"

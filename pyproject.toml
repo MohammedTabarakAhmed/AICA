@@ -38,6 +38,11 @@ api = [
   "fastapi>=0.115,<1",
   "uvicorn>=0.32,<1",
 ]
+# INT-004. Only Socket Mode needs it (the Web API calls use httpx), and it is imported
+# lazily, so everything but `aica slack run` works without it. No dependencies of its own.
+slack = [
+  "slack_sdk>=3.44,<4",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -76,4 +81,9 @@ packages = ["aica"]
 # so their absence must not fail the type check of a core install.
 [[tool.mypy.overrides]]
 module = ["psycopg.*"]
+ignore_missing_imports = true
+
+# INT-004: Socket Mode is an optional extra, imported lazily.
+[[tool.mypy.overrides]]
+module = ["slack_sdk.*"]
 ignore_missing_imports = true

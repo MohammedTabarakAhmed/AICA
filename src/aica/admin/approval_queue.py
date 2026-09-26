@@ -44,6 +44,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from aica.admin.rbac import Permission, Principal
 from aica.approvals import ApprovalRequest
+from aica.audit.events import EventCategory, Outcome
+from aica.audit.sink import AuditLog
 from aica.policy.models import ActionCategory
 
 QUEUE_FILE = "approvals.json"
@@ -224,6 +226,49 @@ class ApprovalQueue:
         except OSError as exc:
             Path(temp).unlink(missing_ok=True)
             raise ApprovalError(f"could not write {self.path}: {exc}") from exc
+
+
+def decide_and_record(
+    queue: ApprovalQueue,
+    request_id: str,
+    principal: Principal,
+    approved: bool,
+    audit: AuditLog,
+    note: str = "",
+    via: str = "",
+    **details: Any,
+) -> PendingApproval:
+    """Decide a request and audit the decision - the one path every surface uses.
+
+    The API, the CLI and Slack (INT-004) all decide through here, so an approval given in
+    a chat client is recorded exactly like one given at a terminal. A refused attempt is
+    audited too: on a surface where anyone in a channel can press a button, who tried to
+    approve something they were not entitled to is worth keeping.
+    """
+    context = {"via": via, **details} if via else dict(details)
+    try:
+        entry = queue.decide(request_id, principal, approved, note)
+    except (PermissionError, ApprovalError) as exc:
+        audit.record(
+            category=EventCategory.APPROVAL,
+            action=f"decision on {request_id} refused",
+            outcome=Outcome.BLOCKED,
+            details={"approved": approved, "reason": str(exc), **context},
+        )
+        raise
+    audit.record(
+        category=EventCategory.APPROVAL,
+        action=f"decision on {request_id}: {entry.state.value}",
+        outcome=Outcome.SUCCESS if approved else Outcome.PENDING_APPROVAL,
+        details={
+            "approved": approved,
+            "note": note,
+            "requested_by": entry.requested_by,
+            "decided_by": entry.decided_by,
+            **context,
+        },
+    )
+    return entry
 
 
 class QueueingApprover:
