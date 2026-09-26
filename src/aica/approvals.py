@@ -45,6 +45,25 @@ class AllowAllApprover:
         return True
 
 
+class ScopedApprover:
+    """Approves exactly the (tool, category) pairs a workflow was approved for; denies the rest.
+
+    For unattended runs such as CI (INT-005). ``AllowAllApprover`` there would turn "this
+    workflow may post a review comment" into "this workflow may do anything that asks", so
+    the grant is written down per tool and per category, and every decision is kept.
+    """
+
+    def __init__(self, grants: dict[str, set[ActionCategory]]) -> None:
+        self._grants = {tool: frozenset(cats) for tool, cats in grants.items()}
+        self.requests: list[tuple[ApprovalRequest, bool]] = []
+
+    def approve(self, request: ApprovalRequest) -> bool:
+        granted = self._grants.get(request.tool, frozenset())
+        decision = bool(request.categories) and set(request.categories) <= granted
+        self.requests.append((request, decision))
+        return decision
+
+
 class CallbackApprover:
     def __init__(self, fn: Callable[[ApprovalRequest], bool]) -> None:
         self._fn = fn

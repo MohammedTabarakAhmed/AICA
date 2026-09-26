@@ -9,7 +9,11 @@ max_test_retries = 3
 # "agent" permits AG-008 delegation to specialist subagents. A subagent always runs with
 # fewer tools than the agent that delegated to it and spends steps from its budget;
 # remove the entry to forbid subagents entirely.
-allowed_tools = ["filesystem", "git", "shell", "tests", "rag", "browser", "database", "agent"]
+# "repository" (INT-006, the approved GitHub connector in config/repositories.toml) was
+# enabled on 2026-09-25 with the user's authorization. Its writes still need EXTERNAL approval.
+allowed_tools = [
+  "filesystem", "git", "shell", "tests", "rag", "browser", "database", "agent", "repository",
+]
 allowed_directories = ["."]
 environment = "development"
 
@@ -24,9 +28,12 @@ mode = "allowlist"
 # gateway has no loopback exemption, and a model endpoint should be named where it is allowed.
 # api.groq.com and generativelanguage.googleapis.com were added on 2026-09-25 with the user's
 # authorization, for the Groq and Gemini free tiers.
+# api.github.com (the INT-006 connector's API) and github.com (git.push to this project's
+# remote) were added on 2026-09-25 with the user's authorization.
 allowed_hosts = [
   "api.deepseek.com", "api.z.ai", "127.0.0.1",
   "api.groq.com", "generativelanguage.googleapis.com",
+  "api.github.com", "github.com",
 ]
 
 [approval]
@@ -76,6 +83,14 @@ deny_in_production = []
 # inject_as = "GITHUB_TOKEN"   # optional: the name the receiving process expects
 # allowed_tools = ["shell.run"]  # which tools may receive it; empty means none
 # description = "Token for the release pipeline"
+
+# INT-006, declared 2026-09-25 with the user's authorization. Only the repository tools may
+# receive it; shell.run may not, so a command cannot ask for the GitHub token.
+[[secrets.definitions]]
+name = "github_token"
+env_var = "GITHUB_TOKEN"
+allowed_tools = ["repo.*"]
+description = "GitHub token for the repository connector (config/repositories.toml)"
 
 [rbac]
 # ADM-001 / SEC-006. Off by default, so a single-developer workspace behaves exactly as

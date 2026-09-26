@@ -15,6 +15,7 @@ Commands:
   aica browse --url U                inspect a running app in a real browser (WEB-001..005)
   aica db schema|query|explain       controlled database access (DB-001..007)
   aica mcp list|tools|call           MCP servers and their tools (MCP-001/005/007)
+  aica repo info|prs|pr|issue|create-pr|comment|push  approved repository connector (INT-006)
   aica serve [--port N]              run the HTTP API (API-001..011)
   aica eval run|gate|compare         golden-task evaluation (EVAL-001..009)
   aica test [--kind unit]            discover and run tests (TEST-001..009)
@@ -40,6 +41,7 @@ import sys
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from aica import __version__
 from aica.adaptation.curation import (
@@ -73,6 +75,7 @@ from aica.approvals import (
     ApprovalRequest,
     ApprovalRequired,
     ConsoleApprover,
+    ScopedApprover,
 )
 from aica.audit import AuditLog, EventCategory, JsonlAuditSink, Outcome
 from aica.chat.assistant import CodingAssistant
@@ -449,11 +452,20 @@ def cmd_review(args: argparse.Namespace) -> int:
     """REV-001..007: review a change. Read-only - nothing is edited, staged or committed.
 
     The exit code is the useful part for a pre-merge hook: 0 clean, 2 findings at or above
-    ``--fail-on``, 6 when the review could not be completed. 6 is deliberately distinct: a
-    review that failed halfway is not a review that passed, and a gate that cannot tell the
-    two apart is worse than no gate (TEST-009).
+    ``--fail-on``, 6 when the review could not be completed, 7 when ``--post-to-pr`` could
+    not post it. 6 is deliberately distinct: a review that failed halfway is not a review
+    that passed, and a gate that cannot tell the two apart is worse than no gate (TEST-009).
+    7 is distinct from 6 so a CI workflow can treat "incomplete, and said so on the PR" as a
+    warning while still failing when the PR never heard about the review at all.
     """
     ctx, _ = _context(args)
+    if args.ci:
+        # INT-005. Unattended: approve exactly what the review workflow was approved for -
+        # the connector's token and the external post, for repo.comment only - and deny the
+        # rest, instead of --yes approving whatever happens to ask.
+        ctx.approver = ScopedApprover(
+            {"repo.comment": {ActionCategory.SECRET_ACCESS, ActionCategory.EXTERNAL}}
+        )
     registry = default_registry()
     payload: dict[str, object] = {}
     if args.staged:
@@ -518,11 +530,39 @@ def cmd_review(args: argparse.Namespace) -> int:
     )
 
     print(report.to_json() if args.json else report.render(show_dropped=args.show_dropped))
+    if args.post_to_pr and not _post_review(args, ctx, registry, report):
+        return 7  # asked to report to the pull request and could not: not a finished run
     if not report.complete:
         return 6
     threshold = Severity(args.fail_on)
     blocking = [f for f in report.findings if severity_rank(f.severity) <= severity_rank(threshold)]
     return 2 if blocking else 0
+
+
+def _post_review(args: argparse.Namespace, ctx: ToolContext, registry: Any, report: Any) -> bool:
+    """INT-005: put the review on the pull request, keeping one comment current per PR."""
+    source = f"model {report.model}" if report.model else "static checks only - no model"
+    state = "complete" if report.complete else "INCOMPLETE - some checks failed to run"
+    body = (
+        f"### aica review ({source}; {state})\n\n"
+        f"```\n{report.render()}\n```\n\n"
+        "_Posted by the aica review workflow (INT-005). Findings are advisory; "
+        "a person decides._"
+    )
+    payload: dict[str, object] = {
+        "number": args.post_to_pr,
+        "body": body[:60_000],
+        "marker": "review",
+    }
+    if args.connector:
+        payload["connector"] = args.connector
+    try:
+        posted = registry.call("repo.comment", payload, ctx)
+    except (ApprovalRequired, ToolNotAllowed, PermissionError, ToolError) as exc:
+        print(f"could not post the review to #{args.post_to_pr}: {exc}", file=sys.stderr)
+        return False
+    print(posted.output, file=sys.stderr)
+    return True
 
 
 def cmd_task(args: argparse.Namespace) -> int:
@@ -806,6 +846,57 @@ def cmd_db(args: argparse.Namespace) -> int:
     except (ToolError, DatabaseError) as exc:
         print(str(exc), file=sys.stderr)
         return 3
+
+
+def cmd_repo(args: argparse.Namespace) -> int:
+    """INT-006: the repository behind an approved connector - read it, open a PR, comment."""
+    ctx, _ = _context(args)
+    ctx.repositories_file = args.repositories_file
+    payload: dict[str, object] = {}
+    if args.connector:
+        payload["connector"] = args.connector
+    tool = {
+        "info": "repo.info",
+        "prs": "repo.pull_requests",
+        "pr": "repo.pull_request",
+        "issue": "repo.issue",
+        "create-pr": "repo.create_pull_request",
+        "comment": "repo.comment",
+        "push": "git.push",
+    }[args.subcommand]
+    if args.subcommand in {"pr", "issue", "comment"}:
+        if not args.number:
+            print(f"{args.subcommand} needs --number", file=sys.stderr)
+            return 2
+        payload["number"] = args.number
+    if args.subcommand == "prs":
+        payload["state"] = args.state
+    if args.subcommand == "pr":
+        payload["include_diff"] = not args.no_diff
+    if args.subcommand == "comment":
+        if not args.body:
+            print("comment needs --body", file=sys.stderr)
+            return 2
+        payload["body"] = args.body
+    if args.subcommand == "create-pr":
+        for key in ("base", "title", "body"):
+            if getattr(args, key):
+                payload[key] = getattr(args, key)
+        payload["draft"] = not args.ready
+    if args.subcommand == "push":
+        payload = {"remote": args.remote}
+    try:
+        result = default_registry().call(tool, payload, ctx)
+    except (ApprovalRequired, ToolNotAllowed, PermissionError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    except ToolError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    print(result.output)
+    for warning in result.data.get("warnings", []) or []:
+        print(f"warning: {warning}", file=sys.stderr)
+    return 0
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:
@@ -1591,6 +1682,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--strict", action="store_true", help="fail rather than review without a model")
     sp.add_argument("--model")
+    sp.add_argument(
+        "--post-to-pr",
+        type=int,
+        metavar="N",
+        help="post the report to pull request N via the repository connector (INT-005/006)",
+    )
+    sp.add_argument("--connector", help="repository connector for --post-to-pr")
+    sp.add_argument(
+        "--ci",
+        action="store_true",
+        help="unattended: approve only the connector token and the PR comment; deny the rest",
+    )
     sp.set_defaults(func=cmd_review)
 
     sp = sub.add_parser("task", help="run an agent task (plan, execute, verify, report)")
@@ -1645,6 +1748,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--describe", nargs="*", help="migration: the change to make")
     sp.add_argument("--model")
     sp.set_defaults(func=cmd_db)
+
+    sp = sub.add_parser("repo", help="the hosted repository behind an approved connector (INT-006)")
+    sp.add_argument(
+        "subcommand", choices=["info", "prs", "pr", "issue", "create-pr", "comment", "push"]
+    )
+    sp.add_argument("--connector", help="approved connector name (default: the config default)")
+    sp.add_argument(
+        "--repositories-file", help="connectors file (default: config/repositories.toml)"
+    )
+    sp.add_argument("--number", type=int, help="pr/issue/comment: the number")
+    sp.add_argument("--state", default="open", choices=["open", "closed", "all"])
+    sp.add_argument("--no-diff", action="store_true", help="pr: skip the diff")
+    sp.add_argument("--body", help="comment/create-pr: the text (redacted before sending)")
+    sp.add_argument("--base", help="create-pr: target branch (default: repository default)")
+    sp.add_argument("--title", help="create-pr: title (default: from the commits)")
+    sp.add_argument("--ready", action="store_true", help="create-pr: open ready, not draft")
+    sp.add_argument("--remote", default="origin", help="push: the remote")
+    sp.set_defaults(func=cmd_repo)
 
     sp = sub.add_parser("mcp", help="MCP servers and their tools")
     sp.add_argument("subcommand", choices=["list", "tools", "call"])
