@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-backoff-cap"
+version = 1
+kind = "agent"
+description = "backoff_delays() must double and respect the cap"
+tags = ["python", "bugfix", "reliability"]
+task = "The test suite fails. Fix src/backoff.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/backoff.py" = "\"\"\"Retry backoff.\"\"\"\n\n\ndef backoff_delays(attempts: int, base: float, cap: float) -> list[float]:\n    \"\"\"Delays base, 2*base, 4*base, ... each at most cap.\"\"\"\n    return [base * (i + 1) for i in range(attempts)]\n"
+"tests/test_backoff.py" = "from src.backoff import backoff_delays\n\n\ndef test_doubles_and_caps() -> None:\n    assert backoff_delays(4, 0.5, 3.0) == [0.5, 1.0, 2.0, 3.0]\n\n\ndef test_none() -> None:\n    assert backoff_delays(0, 1.0, 5.0) == []\n"

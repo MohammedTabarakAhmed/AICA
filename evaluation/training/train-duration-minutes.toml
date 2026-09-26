@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-duration-minutes"
+version = 1
+kind = "agent"
+description = "parse_duration() must accept an 'm' (minutes) suffix as well as 's'"
+tags = ["python", "feature", "parsing"]
+task = "Add support for minutes to parse_duration in src/durations.py: '5m' means 300 seconds. Keep the existing behaviour, make every test pass, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/durations.py" = "\"\"\"Duration parsing.\"\"\"\n\n\ndef parse_duration(text: str) -> int:\n    \"\"\"Seconds in a duration such as '30s'.\"\"\"\n    if text.endswith(\"s\"):\n        return int(text[:-1])\n    raise ValueError(f\"unsupported duration: {text!r}\")\n"
+"tests/test_durations.py" = "import pytest\n\nfrom src.durations import parse_duration\n\n\ndef test_seconds() -> None:\n    assert parse_duration(\"30s\") == 30\n\n\ndef test_minutes() -> None:\n    assert parse_duration(\"5m\") == 300\n\n\ndef test_unknown_unit() -> None:\n    with pytest.raises(ValueError):\n        parse_duration(\"5h\")\n"

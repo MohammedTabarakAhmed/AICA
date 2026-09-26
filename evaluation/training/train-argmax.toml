@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-argmax"
+version = 1
+kind = "agent"
+description = "argmax() returns the value instead of its index"
+tags = ["python", "bugfix", "collections"]
+task = "The test suite fails. Fix src/positions.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/positions.py" = "\"\"\"Positions.\"\"\"\n\n\ndef argmax(values: list[float]) -> int:\n    \"\"\"Index of the largest value (the first one on a tie); empty is a ValueError.\"\"\"\n    return int(max(values))\n"
+"tests/test_positions.py" = "import pytest\n\nfrom src.positions import argmax\n\n\ndef test_index() -> None:\n    assert argmax([1, 3, 2]) == 1\n\n\ndef test_first_on_tie() -> None:\n    assert argmax([5, 1, 5]) == 0\n\n\ndef test_empty() -> None:\n    with pytest.raises(ValueError):\n        argmax([])\n"

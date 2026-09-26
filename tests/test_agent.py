@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -676,3 +677,142 @@ def _pytest_project(root: Path, *, passing: bool = True) -> None:
     (root / "tests" / "test_math.py").write_text(
         f"def test_math():\n    {body}\n", encoding="utf-8"
     )
+
+
+# ---------------------------------------------------------------- deferred step arguments
+
+
+FIXED = "def add(a, b):\n    return a + b + 0\n"
+
+
+def _write_later(**arguments: Any) -> dict[str, Any]:
+    return {"intent": "fix the file", "tool": "fs.write", "arguments": arguments}
+
+
+def test_a_deferred_step_is_filled_from_earlier_results_before_it_runs(workspace: Path) -> None:
+    """The planner has not read the file, so the write waits for the read (no guessing)."""
+    ctx = make_ctx(workspace)
+    adapter = ScriptedAdapter(
+        [
+            plan_json(READ, {**_write_later(path="src/app.py"), "deferred": True}),
+            json.dumps({"arguments": {"content": FIXED}}),
+        ]
+    )
+    loop = AgentLoop(adapter, default_registry())
+    loop.run("fix add", ctx)
+
+    assert (workspace / "src" / "app.py").read_text(encoding="utf-8") == FIXED
+    step = loop.state.plan.steps[1] if loop.state else None
+    assert step is not None and step.deferred and step.status is StepStatus.SUCCEEDED
+    assert step.planned_arguments == {"path": "src/app.py"}
+    assert step.arguments == {"path": "src/app.py", "content": FIXED}
+    # The fill request showed what the read returned, fenced as untrusted content.
+    assert "return a + b" in step.fill_prompt and "UNTRUSTED" in step.fill_prompt
+    assert adapter.calls[1][-1].content == step.fill_prompt
+    restored = AgentState.from_json(loop.state.to_json()) if loop.state else None
+    assert restored is not None and restored.plan.steps[1].fill_prompt == step.fill_prompt
+
+
+def test_a_placeholder_is_never_written_it_defers_the_step(workspace: Path) -> None:
+    ctx = make_ctx(workspace)
+    adapter = ScriptedAdapter(
+        [
+            plan_json(READ, _write_later(path="src/app.py", content="placeholder")),
+            json.dumps({"arguments": {"content": FIXED}}),
+        ]
+    )
+    loop = AgentLoop(adapter, default_registry())
+    loop.run("fix add", ctx)
+    assert (workspace / "src" / "app.py").read_text(encoding="utf-8") == FIXED
+    assert loop.state is not None and loop.state.plan.steps[1].planned_arguments == {
+        "path": "src/app.py"
+    }
+
+
+def test_a_fill_that_is_still_a_placeholder_never_reaches_the_file(workspace: Path) -> None:
+    ctx = make_ctx(workspace)
+    adapter = ScriptedAdapter(
+        [
+            plan_json(READ, {**_write_later(path="src/app.py"), "deferred": True}),
+            json.dumps({"arguments": {"content": "TODO"}}),
+            json.dumps({"arguments": {"content": "<new file content>"}}),
+            json.dumps({"action": "abort", "reason": "cannot fill it"}),
+        ]
+    )
+    report = AgentLoop(adapter, default_registry()).run("fix add", ctx)
+    assert (workspace / "src" / "app.py").read_text(encoding="utf-8").startswith("def add")
+    assert report.succeeded is False and not report.changes
+
+
+def test_failing_tests_before_any_change_are_the_baseline_not_a_failure(workspace: Path) -> None:
+    """Running the red suite first is how a plan sees what is broken; no repair is asked for,
+    and only the later passing run can clear the ledger (AG-009)."""
+    _pytest_project(workspace, passing=False)
+    ctx = make_ctx(workspace)
+    command = f'"{sys.executable}" -m pytest tests -q -p no:cacheprovider'
+    test_step = {"intent": "run tests", "tool": "test.run", "arguments": {"command": command}}
+    # A different size from the red file: rewritten within the same second at the same size,
+    # Python would reuse the stale bytecode and the suite would stay red.
+    fixed_test = "def test_math():\n    assert 1 + 1 == 2  # fixed\n"
+    adapter = ScriptedAdapter(
+        [
+            plan_json(
+                test_step,
+                {
+                    "intent": "fix the test",
+                    "tool": "fs.write",
+                    "arguments": {"path": "tests/test_math.py", "content": fixed_test},
+                },
+                test_step,
+                verification=["unit"],
+            )
+        ]
+    )
+    loop = AgentLoop(adapter, default_registry())
+    report = loop.run("make the suite pass", ctx)
+    assert len(adapter.calls) == 1  # the plan only: no adaptation was needed
+    assert report.succeeded is True
+    assert loop.state is not None
+    assert [s.status for s in loop.state.plan.steps] == [StepStatus.SUCCEEDED] * 3
+
+
+def test_a_failing_test_with_no_change_planned_is_still_a_failure(workspace: Path) -> None:
+    _pytest_project(workspace, passing=False)
+    ctx = make_ctx(workspace)
+    command = f'"{sys.executable}" -m pytest tests -q -p no:cacheprovider'
+    adapter = ScriptedAdapter(
+        [
+            plan_json(
+                {"intent": "run tests", "tool": "test.run", "arguments": {"command": command}},
+                verification=["unit"],
+            ),
+            json.dumps({"action": "abort", "reason": "the suite is red"}),
+        ]
+    )
+    report = AgentLoop(adapter, default_registry()).run("check", ctx)
+    assert len(adapter.calls) == 2 and report.succeeded is False
+
+
+def test_a_step_cannot_outlast_the_run_budget(workspace: Path) -> None:
+    """AG-007: the budget is checked between steps, so one hung command must be cut off at
+    the run's deadline rather than at its own, much longer timeout."""
+    ctx = make_ctx(workspace)
+    hang = f'"{sys.executable}" -c "import time; time.sleep(60)"'
+    adapter = ScriptedAdapter(
+        [
+            plan_json(
+                {
+                    "intent": "hang",
+                    "tool": "shell.run",
+                    "arguments": {"command": hang, "timeout_seconds": 600},
+                }
+            ),
+            json.dumps({"action": "abort", "reason": "it hung"}),
+        ]
+    )
+    started = time.monotonic()
+    AgentLoop(adapter, default_registry()).run(
+        "hang", ctx, budget=RunBudget(max_steps=5, max_seconds=3)
+    )
+    assert time.monotonic() - started < 30
+    assert ctx.deadline is None  # restored for whoever uses the context next

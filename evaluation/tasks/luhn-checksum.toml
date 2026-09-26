@@ -1,0 +1,18 @@
+# Held-out golden task (EVAL-001). Never used for training (BRD 13).
+id = "luhn-checksum"
+version = 1
+kind = "agent"
+description = "luhn_valid() doubles the wrong digits"
+tags = ["python", "bugfix", "algorithms"]
+task = "The test suite fails. Fix luhn_valid in src/checksums.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 10
+max_seconds = 180
+
+scripted = ["{\n \"summary\": \"read, fix, verify\",\n \"steps\": [\n  {\n   \"intent\": \"read the module\",\n   \"tool\": \"fs.read\",\n   \"arguments\": {\n    \"path\": \"src/checksums.py\"\n   }\n  },\n  {\n   \"intent\": \"write the fixed module\",\n   \"tool\": \"fs.write\",\n   \"arguments\": {\n    \"path\": \"src/checksums.py\",\n    \"content\": \"\\\"\\\"\\\"Checksums.\\\"\\\"\\\"\\n\\n\\ndef luhn_valid(number: str) -> bool:\\n    \\\"\\\"\\\"Luhn check: from the right, double every second digit.\\\"\\\"\\\"\\n    total = 0\\n    for i, ch in enumerate(reversed(number)):\\n        d = int(ch)\\n        if i % 2 == 1:\\n            d *= 2\\n            if d > 9:\\n                d -= 9\\n        total += d\\n    return total % 10 == 0\\n\"\n   }\n  },\n  {\n   \"intent\": \"run the suite\",\n   \"tool\": \"test.run\",\n   \"arguments\": {\n    \"kind\": \"unit\"\n   }\n  }\n ],\n \"verification\": [\n  \"unit\"\n ]\n}"]
+
+[files]
+"src/__init__.py" = ""
+"src/checksums.py" = "\"\"\"Checksums.\"\"\"\n\n\ndef luhn_valid(number: str) -> bool:\n    \"\"\"Luhn check: from the right, double every second digit.\"\"\"\n    total = 0\n    for i, ch in enumerate(number):\n        d = int(ch)\n        if i % 2 == 1:\n            d *= 2\n            if d > 9:\n                d -= 9\n        total += d\n    return total % 10 == 0\n"
+"tests/test_checksums.py" = "from src.checksums import luhn_valid\n\n\ndef test_valid() -> None:\n    assert luhn_valid(\"4539148803436467\")\n\n\ndef test_invalid() -> None:\n    assert not luhn_valid(\"4539148803436468\")\n"

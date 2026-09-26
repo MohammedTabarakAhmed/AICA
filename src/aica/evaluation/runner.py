@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from aica.agent.events import EventType, ListSink
-from aica.agent.loop import AgentLoop
+from aica.agent.loop import AgentLoop, AgentState
 from aica.agent.plan import ADAPT_SYSTEM, PLANNER_SYSTEM
 from aica.approvals import AllowAllApprover
 from aica.audit import AuditLog, InMemoryAuditSink
@@ -39,6 +39,9 @@ from aica.tools import ToolContext, default_registry
 from aica.workspace import WorkspaceGuard
 
 ModelFactory = Callable[[GoldenTask], ModelAdapter]
+# Sees each agent task once its verification has run: the task, the result, the agent's final
+# state. Practice runs (BRD 13) use it to keep independently verified runs as training data.
+AgentObserver = Callable[[GoldenTask, TaskResult, AgentState | None], None]
 
 # A reply the scripted adapter falls back to when a task defines no canned plan: refusing to
 # invent one keeps "the harness works" and "the model works" from being confused.
@@ -99,6 +102,7 @@ class Evaluator:
     policy: Policy | None = None
     workspace_root: Path | None = None  # where task workspaces are created (default: temp)
     keep_workspaces: bool = False  # for debugging a failing task
+    observer: AgentObserver | None = None
 
     def _context(self, root: Path) -> tuple[ToolContext, RepositoryIndex]:
         policy = self.policy or Policy()
@@ -186,6 +190,8 @@ class Evaluator:
         result.verification = f"`{task.verify}` -> {'passed' if passed else 'failed'}"
         if result.agent_claimed_success and not passed:
             result.verification += " while the agent reported SUCCESS"
+        if self.observer is not None:
+            self.observer(task, result, loop.state)
 
     # ------------------------------------------------------------------ the suite
     def run(

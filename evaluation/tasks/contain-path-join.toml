@@ -1,0 +1,18 @@
+# Held-out golden task (EVAL-001). Never used for training (BRD 13).
+id = "contain-path-join"
+version = 1
+kind = "agent"
+description = "safe_join() lets a name escape the base directory"
+tags = ["python", "security", "bugfix"]
+task = "safe_join in src/storage.py allows path traversal out of the storage directory. Fix it so the tests pass, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 10
+max_seconds = 180
+
+scripted = ["{\n \"summary\": \"read, fix, verify\",\n \"steps\": [\n  {\n   \"intent\": \"read the module\",\n   \"tool\": \"fs.read\",\n   \"arguments\": {\n    \"path\": \"src/storage.py\"\n   }\n  },\n  {\n   \"intent\": \"write the fixed module\",\n   \"tool\": \"fs.write\",\n   \"arguments\": {\n    \"path\": \"src/storage.py\",\n    \"content\": \"\\\"\\\"\\\"File storage.\\\"\\\"\\\"\\n\\nfrom pathlib import Path\\n\\n\\ndef safe_join(base: Path, name: str) -> Path:\\n    \\\"\\\"\\\"base / name, refusing (ValueError) any name that would resolve outside base.\\\"\\\"\\\"\\n    root = base.resolve()\\n    target = (root / name).resolve()\\n    if not target.is_relative_to(root):\\n        raise ValueError(f\\\"{name!r} is outside the storage directory\\\")\\n    return target\\n\"\n   }\n  },\n  {\n   \"intent\": \"run the suite\",\n   \"tool\": \"test.run\",\n   \"arguments\": {\n    \"kind\": \"unit\"\n   }\n  }\n ],\n \"verification\": [\n  \"unit\"\n ]\n}"]
+
+[files]
+"src/__init__.py" = ""
+"src/storage.py" = "\"\"\"File storage.\"\"\"\n\nfrom pathlib import Path\n\n\ndef safe_join(base: Path, name: str) -> Path:\n    \"\"\"base / name, refusing (ValueError) any name that would resolve outside base.\"\"\"\n    return base / name\n"
+"tests/test_storage.py" = "from pathlib import Path\n\nimport pytest\n\nfrom src.storage import safe_join\n\n\ndef test_inside(tmp_path: Path) -> None:\n    assert safe_join(tmp_path, \"a/b.txt\") == (tmp_path / \"a\" / \"b.txt\").resolve()\n\n\n@pytest.mark.parametrize(\"name\", [\"../secret.txt\", \"a/../../x\"])\ndef test_traversal_refused(tmp_path: Path, name: str) -> None:\n    with pytest.raises(ValueError):\n        safe_join(tmp_path, name)\n\n\ndef test_absolute_refused(tmp_path: Path) -> None:\n    with pytest.raises(ValueError):\n        safe_join(tmp_path / \"store\", str(tmp_path / \"elsewhere\"))\n"

@@ -34,12 +34,12 @@ from typing import Any
 
 from aica.adaptation.trajectories import Trajectory, extract, screen
 from aica.admin.rbac import Permission, Principal
-from aica.agent.plan import PLANNER_SYSTEM
+from aica.agent.plan import FILL_SYSTEM, PLANNER_SYSTEM
 from aica.policy.models import Policy
 
 ADAPTATION_DIR = Path(".aica") / "adaptation"
 CANDIDATES_FILE = "candidates.json"
-DATASET_FORMAT = "chat-sft-v1"
+DATASET_FORMAT = "chat-sft-v2"
 
 _LOCK = threading.RLock()
 
@@ -195,23 +195,60 @@ class DatasetManifest:
         return cls(**data)
 
 
-def example_for(trajectory: Trajectory) -> dict[str, Any]:
-    """One SFT example in chat format: the planner's prompt, the task, the plan it produced."""
+def examples_for(trajectory: Trajectory) -> list[dict[str, Any]]:
+    """SFT examples in chat format, each exactly as the model was asked at the time.
+
+    The first is the plan: the planner's prompt and the task, answered with the plan, where
+    a deferred step shows only the arguments the plan gave. Each deferred step then adds one
+    example: the request made once earlier steps had run, answered with the arguments that
+    worked. A model trained on these learns to read before it writes, never to write content
+    it has not seen.
+    """
+    steps: list[dict[str, Any]] = []
+    for s in trajectory.steps:
+        if s.deferred:
+            steps.append(
+                {
+                    "intent": s.intent,
+                    "tool": s.tool,
+                    "arguments": s.planned_arguments,
+                    "deferred": True,
+                }
+            )
+        else:
+            steps.append({"intent": s.intent, "tool": s.tool, "arguments": s.arguments})
     plan = {
         "summary": trajectory.summary,
-        "steps": [
-            {"intent": s.intent, "tool": s.tool, "arguments": s.arguments} for s in trajectory.steps
-        ],
+        "steps": steps,
         "verification": sorted(trajectory.verification),
     }
-    return {
-        "messages": [
-            {"role": "system", "content": PLANNER_SYSTEM},
-            {"role": "user", "content": f"Task: {trajectory.task}"},
-            {"role": "assistant", "content": json.dumps(plan, ensure_ascii=False)},
-        ],
-        "meta": {"trajectory": trajectory.id, "source_model": trajectory.model},
-    }
+    meta = {"trajectory": trajectory.id, "source_model": trajectory.model}
+    examples: list[dict[str, Any]] = [
+        {
+            "messages": [
+                {"role": "system", "content": PLANNER_SYSTEM},
+                {"role": "user", "content": f"Task: {trajectory.task}"},
+                {"role": "assistant", "content": json.dumps(plan, ensure_ascii=False)},
+            ],
+            "meta": {**meta, "kind": "plan"},
+        }
+    ]
+    for s in trajectory.steps:
+        if s.deferred and s.fill_prompt:
+            examples.append(
+                {
+                    "messages": [
+                        {"role": "system", "content": FILL_SYSTEM},
+                        {"role": "user", "content": s.fill_prompt},
+                        {
+                            "role": "assistant",
+                            "content": json.dumps({"arguments": s.arguments}, ensure_ascii=False),
+                        },
+                    ],
+                    "meta": {**meta, "kind": "fill"},
+                }
+            )
+    return examples
 
 
 def datasets_dir(root: str | Path) -> Path:
@@ -235,7 +272,10 @@ def build_dataset(root: str | Path, policy: Policy, principal: Principal) -> Dat
         if not verdict.eligible:
             dropped[trajectory.id] = verdict.reasons
             continue
-        lines.append(json.dumps(example_for(trajectory), sort_keys=True, ensure_ascii=False))
+        lines += [
+            json.dumps(example, sort_keys=True, ensure_ascii=False)
+            for example in examples_for(trajectory)
+        ]
         ids.append(trajectory.id)
     if not lines:
         raise AdaptationError(

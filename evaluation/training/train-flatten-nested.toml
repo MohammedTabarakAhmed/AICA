@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-flatten-nested"
+version = 1
+kind = "agent"
+description = "flatten() only flattens one level"
+tags = ["python", "bugfix", "recursion"]
+task = "The test suite fails. Fix src/nesting.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/nesting.py" = "\"\"\"Nested lists.\"\"\"\n\nfrom typing import Any\n\n\ndef flatten(items: list[Any]) -> list[Any]:\n    \"\"\"Every non-list value, in order, however deeply nested.\"\"\"\n    out: list[Any] = []\n    for item in items:\n        if isinstance(item, list):\n            out.extend(item)\n        else:\n            out.append(item)\n    return out\n"
+"tests/test_nesting.py" = "from src.nesting import flatten\n\n\ndef test_one_level() -> None:\n    assert flatten([1, [2, 3]]) == [1, 2, 3]\n\n\ndef test_deep() -> None:\n    assert flatten([1, [2, [3, [4]]], 5]) == [1, 2, 3, 4, 5]\n"

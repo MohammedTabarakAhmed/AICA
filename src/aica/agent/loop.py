@@ -22,12 +22,15 @@ from typing import Any
 from aica.agent.events import AgentEvent, EventSink, EventType, NullSink, StepStatus
 from aica.agent.plan import (
     ADAPT_SYSTEM,
+    FILL_SYSTEM,
     Adaptation,
     Plan,
     PlanError,
     Planner,
     PlanStep,
+    fill_request,
     parse_adaptation,
+    parse_fill,
     tool_catalogue,
 )
 from aica.agent.subagents import DELEGATE_TOOL, Delegation, fold_into
@@ -181,6 +184,10 @@ class AgentLoop:
         )
 
         base_registry = self.registry
+        # AG-007: commands run by a step get no more time than the run has left.
+        outer_deadline = ctx.deadline
+        deadline = budget.started_at + budget.max_seconds
+        ctx.deadline = deadline if outer_deadline is None else min(outer_deadline, deadline)
         if self.delegation is not None:
             # agent.delegate exists for this run only, bound to this run's budget (AG-008).
             self.registry = self.delegation.registry_for(base_registry, budget)
@@ -211,6 +218,7 @@ class AgentLoop:
             pass
         finally:
             self.registry = base_registry
+            ctx.deadline = outer_deadline
 
         report = self._report(state, ctx, budget, started, cancelled=cancelled, aborted=aborted)
         self._emit(
@@ -264,6 +272,22 @@ class AgentLoop:
                 raise TaskAborted("step scheduling made no progress")
 
             budget.check()  # AG-006/AG-007 before anything happens
+            if step.awaiting_arguments:
+                try:
+                    self._fill(state, step, ctx)
+                except (PlanError, ModelError) as exc:
+                    step.attempts += 1
+                    step.status = StepStatus.FAILED
+                    step.error = f"could not fill in the arguments: {exc}"
+                    self._emit(
+                        type=EventType.TOOL_FAILED,
+                        message=step.error,
+                        step_id=step.id,
+                        tool=step.tool,
+                        status=StepStatus.FAILED,
+                    )
+                    self._fail_step(state, step, ctx, limit, cause=exc)
+                    continue
             number = budget.consume_step()
             state.steps_used = budget.steps_used
             step.status = StepStatus.RUNNING
@@ -334,6 +358,24 @@ class AgentLoop:
                 k: v for k, v in result.data.items() if isinstance(v, str | int | float | bool)
             }
 
+            if not result.ok and self._is_baseline(state, step):
+                # Running the tests before changing anything, with changes still to come, is
+                # how a plan sees what is broken; a red suite is the answer it asked for, not
+                # a failure to repair. The ledger already holds the failure, so only a later
+                # passing run can clear it (AG-009).
+                step.status = StepStatus.SUCCEEDED
+                self._emit(
+                    type=EventType.OBSERVATION,
+                    message="the tests fail before any change: "
+                    + (step.result.splitlines()[0][:200] if step.result else step.tool),
+                    step_id=step.id,
+                    step_number=number,
+                    tool=step.tool,
+                    status=StepStatus.SUCCEEDED,
+                    data=payload,
+                )
+                continue
+
             if not result.ok:
                 # A tool can report failure without raising - a red test suite, a command with a
                 # non-zero exit. That is a failed step, not a completed one.
@@ -361,6 +403,58 @@ class AgentLoop:
                 status=StepStatus.SUCCEEDED,
                 data=payload,
             )
+
+    @staticmethod
+    def _is_baseline(state: AgentState, step: PlanStep) -> bool:
+        """A test run before this run changed anything, with a change still planned."""
+        if step.tool != "test.run" or state.changes:
+            return False
+        later = state.plan.steps[state.plan.steps.index(step) + 1 :]
+        return any(s.status is StepStatus.PENDING and s.tool in _MUTATING for s in later)
+
+    def _fill(self, state: AgentState, step: PlanStep, ctx: ToolContext) -> None:
+        """Ask for a deferred step's arguments now that the steps before it have run.
+
+        The reply is validated like any plan output (model output is untrusted, SAFE-007),
+        and the step then goes through ``ToolRegistry.call`` like every other step: filling
+        arguments grants nothing.
+        """
+        done = state.plan.steps[: state.plan.steps.index(step)]
+        prompt = fill_request(state.task, done, step)
+        messages = [
+            ChatMessage(role="system", content=FILL_SYSTEM),
+            ChatMessage(
+                role="system", content="Tools available:\n" + tool_catalogue(self.registry, ctx)
+            ),
+            ChatMessage(role="user", content=prompt),
+        ]
+        last: PlanError | None = None
+        for _ in range(2):
+            response = self.adapter.chat(messages, temperature=0.0)
+            try:
+                arguments = parse_fill(response.content, step)
+            except PlanError as exc:
+                last = exc
+                messages = [
+                    *messages,
+                    ChatMessage(role="assistant", content=response.content),
+                    ChatMessage(
+                        role="user",
+                        content=f"Those arguments were rejected: {exc}. Return corrected JSON.",
+                    ),
+                ]
+                continue
+            step.planned_arguments = dict(step.arguments)
+            step.arguments = arguments
+            step.fill_prompt = prompt
+            self._emit(
+                type=EventType.PLAN_REVISED,
+                message=f"{step.id}: arguments filled in from earlier results",
+                step_id=step.id,
+                data={"action": "fill", "arguments": sorted(arguments)},
+            )
+            return
+        raise PlanError(str(last))
 
     def _fail_step(
         self,
