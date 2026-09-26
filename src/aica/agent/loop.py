@@ -184,6 +184,10 @@ class AgentLoop:
         )
 
         base_registry = self.registry
+        # AG-007: commands run by a step get no more time than the run has left.
+        outer_deadline = ctx.deadline
+        deadline = budget.started_at + budget.max_seconds
+        ctx.deadline = deadline if outer_deadline is None else min(outer_deadline, deadline)
         if self.delegation is not None:
             # agent.delegate exists for this run only, bound to this run's budget (AG-008).
             self.registry = self.delegation.registry_for(base_registry, budget)
@@ -214,6 +218,7 @@ class AgentLoop:
             pass
         finally:
             self.registry = base_registry
+            ctx.deadline = outer_deadline
 
         report = self._report(state, ctx, budget, started, cancelled=cancelled, aborted=aborted)
         self._emit(

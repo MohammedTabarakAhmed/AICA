@@ -78,6 +78,10 @@ class ToolContext:
     # the file is protected like any other developer change. Shared (not copied) with
     # subagents, whose context is a shallow ``replace`` of this one.
     own_writes: dict[str, str] = field(default_factory=dict)
+    # AG-007. When the run this call belongs to must end (a ``time.monotonic()`` value). A
+    # budget checked only between steps cannot stop one long step, so a command a step
+    # runs is given no more time than the run has left. None: no run deadline.
+    deadline: float | None = None
     # INT-006. Overrides config/repositories.toml, like ``databases_file``; a connector is
     # always selected by name from a configuration file, never supplied by a call.
     repositories_file: str | None = None

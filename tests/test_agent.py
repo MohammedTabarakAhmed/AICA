@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -788,3 +789,28 @@ def test_a_failing_test_with_no_change_planned_is_still_a_failure(workspace: Pat
     )
     report = AgentLoop(adapter, default_registry()).run("check", ctx)
     assert len(adapter.calls) == 2 and report.succeeded is False
+
+
+def test_a_step_cannot_outlast_the_run_budget(workspace: Path) -> None:
+    """AG-007: the budget is checked between steps, so one hung command must be cut off at
+    the run's deadline rather than at its own, much longer timeout."""
+    ctx = make_ctx(workspace)
+    hang = f'"{sys.executable}" -c "import time; time.sleep(60)"'
+    adapter = ScriptedAdapter(
+        [
+            plan_json(
+                {
+                    "intent": "hang",
+                    "tool": "shell.run",
+                    "arguments": {"command": hang, "timeout_seconds": 600},
+                }
+            ),
+            json.dumps({"action": "abort", "reason": "it hung"}),
+        ]
+    )
+    started = time.monotonic()
+    AgentLoop(adapter, default_registry()).run(
+        "hang", ctx, budget=RunBudget(max_steps=5, max_seconds=3)
+    )
+    assert time.monotonic() - started < 30
+    assert ctx.deadline is None  # restored for whoever uses the context next

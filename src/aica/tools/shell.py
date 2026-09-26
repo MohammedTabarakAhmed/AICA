@@ -10,6 +10,7 @@ later hardening step recorded in the progress file.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess  # noqa: S404 - controlled execution is the purpose of this tool
 import sys
 import threading
@@ -120,6 +121,8 @@ def execute(
         text=True,
         encoding="utf-8",
         errors="replace",
+        # POSIX: its own process group, so a timeout or cancel can stop everything it started.
+        start_new_session=sys.platform != "win32",
     )
     cancelled = False
     timed_out = False
@@ -128,7 +131,7 @@ def execute(
     def _watch_cancel() -> None:
         while not stop.wait(0.1):
             if cancel is not None and cancel.is_cancelled:
-                proc.kill()
+                _kill_tree(proc)
                 return
 
     watcher = threading.Thread(target=_watch_cancel, daemon=True)
@@ -136,9 +139,13 @@ def execute(
     try:
         out, err = proc.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        out, err = proc.communicate()
+        _kill_tree(proc)
         timed_out = True
+        try:
+            out, err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:  # something outside the tree still holds the pipes
+            out, err = "", ""
+
     finally:
         stop.set()
         watcher.join(timeout=1)
@@ -153,6 +160,35 @@ def execute(
         timed_out=timed_out,
         cancelled=cancelled,
     )
+
+
+def _kill_tree(proc: subprocess.Popen[str]) -> None:
+    """Stop the shell and everything it started (SAFE-008, AG-007).
+
+    Killing only the shell leaves the command it ran alive - and holding the output pipes, so
+    reading them waits for that command to finish on its own, whatever the timeout said.
+    """
+    try:
+        if sys.platform == "win32":
+            subprocess.run(  # noqa: S603 - fixed arguments, a pid we started
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],  # noqa: S607
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    proc.kill()
+
+
+def _time_allowed(requested: float, ctx: ToolContext) -> float:
+    """The command's timeout: what it asked for, within policy and what the run has left."""
+    allowed = min(requested, float(ctx.policy.autonomy.max_seconds))
+    if ctx.deadline is not None:
+        allowed = min(allowed, max(ctx.deadline - time.monotonic(), 1.0))
+    return allowed
 
 
 class RunCommand(Tool):
@@ -236,10 +272,11 @@ class RunCommand(Tool):
                 [ActionCategory.SECRET_ACCESS],
                 secrets=list(injection.names),  # names only; the values never leave the store
             )
+        timeout = _time_allowed(args.timeout_seconds, ctx)
         result = execute(
             args.command,
             str(cwd),
-            timeout_seconds=min(args.timeout_seconds, float(ctx.policy.autonomy.max_seconds)),
+            timeout_seconds=timeout,
             env=build_environment({**args.env, **injection.env}),
             cancel=ctx.cancel,
         )
@@ -275,7 +312,7 @@ class RunCommand(Tool):
         if result.stderr:
             output += ("\n" if output else "") + "[stderr]\n" + result.stderr
         if result.timed_out:
-            output += f"\n[timed out after {args.timeout_seconds:.0f}s; process killed]"
+            output += f"\n[timed out after {timeout:.0f}s; process killed]"
         if result.cancelled:
             output += "\n[cancelled]"
         return ToolResult(
