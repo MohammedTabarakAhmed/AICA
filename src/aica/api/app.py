@@ -35,7 +35,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from aica.adaptation.registry import AdapterRegistry
-from aica.admin.approval_queue import ApprovalError, ApprovalQueue, QueueingApprover
+from aica.admin.approval_queue import (
+    ApprovalError,
+    ApprovalQueue,
+    QueueingApprover,
+    decide_and_record,
+)
 from aica.admin.controls import ControlError, ControlPlane, TargetKind
 from aica.admin.rbac import Permission
 from aica.admin.reporting import (
@@ -1116,24 +1121,21 @@ def create_app(settings: ApiSettings) -> FastAPI:
         """API-014: record a decision. The requester may not decide their own (SEC-006)."""
         ctx, index = build_context()
         try:
-            entry = _queue().decide(decision_id, ctx.actor, decision.approved, decision.note)
+            entry = decide_and_record(
+                _queue(),
+                decision_id,
+                ctx.actor,
+                decision.approved,
+                ctx.audit,
+                decision.note,
+                via="api",
+            )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ApprovalError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         finally:
             index.close()
-        ctx.audit.record(
-            category=EventCategory.APPROVAL,
-            action=f"decision on {decision_id}: {entry.state.value}",
-            outcome=Outcome.SUCCESS if decision.approved else Outcome.PENDING_APPROVAL,
-            details={
-                "approved": decision.approved,
-                "note": decision.note,
-                "requested_by": entry.requested_by,
-                "decided_by": entry.decided_by,
-            },
-        )
         payload: dict[str, Any] = json.loads(entry.model_dump_json())
         return payload
 

@@ -16,6 +16,7 @@ Commands:
   aica db schema|query|explain       controlled database access (DB-001..007)
   aica mcp list|tools|call           MCP servers and their tools (MCP-001/005/007)
   aica repo info|prs|pr|issue|create-pr|comment|push  approved repository connector (INT-006)
+  aica slack check|sync|run          Slack approvals, task updates and questions (INT-004)
   aica serve [--port N]              run the HTTP API (API-001..011)
   aica eval run|gate|compare         golden-task evaluation (EVAL-001..009)
   aica test [--kind unit]            discover and run tests (TEST-001..009)
@@ -38,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -53,7 +55,12 @@ from aica.adaptation.curation import (
 )
 from aica.adaptation.registry import AdapterRegistry, CandidateSource
 from aica.adaptation.training import Method, TrainingConfig, plan_training
-from aica.admin.approval_queue import ApprovalError, ApprovalQueue
+from aica.admin.approval_queue import (
+    ApprovalError,
+    ApprovalQueue,
+    QueueingApprover,
+    decide_and_record,
+)
 from aica.admin.controls import ControlError, ControlPlane, TargetKind
 from aica.admin.quotas import report as quota_report
 from aica.admin.rbac import Permission
@@ -83,6 +90,19 @@ from aica.chat.commit_message import InvalidCommitMessage, suggest_commit_messag
 from aica.chat.session import Session, SessionConflict, SessionStore
 from aica.database.connections import DatabaseError, load_databases
 from aica.database.migrations import MigrationError, generate_migration
+from aica.integrations.slack import INTEGRATION as SLACK_INTEGRATION
+from aica.integrations.slack import TOOL as SLACK_TOOL
+from aica.integrations.slack import (
+    Answerer,
+    SlackAnswer,
+    SlackBridge,
+    SlackError,
+    SlackWebApi,
+    SyncResult,
+    check_network,
+    load_slack,
+    run_socket_mode,
+)
 from aica.mcp.config import MCPConfigError, load_mcp_config
 from aica.models.base import ModelError
 from aica.models.gateway import ActiveAdapterSource, ModelGateway
@@ -93,6 +113,7 @@ from aica.policy.models import ActionCategory
 from aica.rag.index import RepositoryIndex
 from aica.review.findings import Severity, severity_rank
 from aica.review.reviewer import DEFAULT_CHECKS, CodeReviewer, ReviewCheck, ReviewRequest
+from aica.safety.secrets import SecretError, SecretStore, scrub
 from aica.testing.browser_tests import generate_browser_test
 from aica.testing.generation import GenerationError, generate_tests
 from aica.tools import ToolContext, default_registry
@@ -1264,6 +1285,176 @@ def cmd_admin(args: argparse.Namespace) -> int:
     return 2
 
 
+def _slack_answerer(args: argparse.Namespace) -> Answerer:
+    """INT-004: answer a Slack question exactly as ``aica ask`` would, as that principal."""
+
+    def answer(principal: str, question: str, session_id: str | None) -> SlackAnswer:
+        scoped = argparse.Namespace(
+            **{**vars(args), "actor": principal, "session": session_id, "yes": False}
+        )
+        ctx, index = _context(scoped)
+        # Nobody watches this console: anything sensitive is parked for a human to decide
+        # (and so reaches Slack as an approval request) instead of prompting (API-014).
+        ctx.approver = QueueingApprover(ApprovalQueue(ctx.workspace.root), requested_by=principal)
+        try:
+            store = SessionStore(ctx.workspace.root)
+            try:
+                session = _open_session(scoped, ctx, store)
+            except (KeyError, PermissionError):
+                # The thread's session is gone or belongs to someone else: start afresh
+                # rather than refuse a question the principal may ask on their own.
+                session = Session(workspace=str(ctx.workspace.root), owner=principal)
+            adapter, _ = _adapter(scoped, ctx, TaskKind.CHAT)
+            session.model_name = adapter.info.name
+            session.policy_version = ctx.policy.version
+            result = CodingAssistant(
+                adapter,
+                index,
+                workspace_root=ctx.workspace.root,
+                project_context=ProjectContextStore(ctx.workspace.root).load(),
+            ).ask(session, question)
+            store.save(session)
+            return SlackAnswer(
+                text=result.text,
+                session_id=session.session_id,
+                model=result.model,
+                sources=result.sources,
+            )
+        finally:
+            # The bridge is long-running: an index per question must not accumulate.
+            index.close()
+            with suppress(ValueError):
+                _OPEN_INDEXES.remove(index)
+
+    return answer
+
+
+def _print_sync(result: SyncResult) -> None:
+    if result.skipped:
+        print(f"slack: skipped - {result.skipped}", file=sys.stderr)
+        return
+    if result.posted or result.updated or result.announced:
+        print(
+            f"slack: {result.posted} approval request(s) posted, {result.updated} updated, "
+            f"{result.announced} finished task(s) announced"
+        )
+    for error in result.errors:
+        print(f"slack: {error}", file=sys.stderr)
+
+
+def cmd_slack(args: argparse.Namespace) -> int:
+    """INT-004: check the Slack setup, sync once, or run the Socket Mode bridge."""
+    try:
+        config = load_slack(args.slack_file)
+    except SlackError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    if not config.enabled:
+        where = args.slack_file or "config/slack.toml"
+        print(f"the Slack integration is not enabled ({where}: enabled = false)", file=sys.stderr)
+        return 3
+    ctx, _ = _context(args)
+    switched_off = ControlPlane(ctx.workspace.root).is_disabled(
+        TargetKind.INTEGRATION, SLACK_INTEGRATION
+    )
+    if switched_off is not None:
+        print(
+            f"the Slack integration is switched off (SEC-007): {switched_off.describe()}",
+            file=sys.stderr,
+        )
+        return 5
+    try:
+        check_network(config, ctx.policy.network)
+    except SlackError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    # Socket Mode needs the app-level token as well; check and sync need only the bot's.
+    names = [config.bot_token_secret]
+    if args.slack_command == "run":
+        names.append(config.app_token_secret)
+    ctx.require_approval(
+        SLACK_TOOL,
+        f"use secret(s) {', '.join(names)} for the Slack integration",
+        [ActionCategory.SECRET_ACCESS],
+        secrets=names,
+    )
+    try:
+        values = SecretStore(ctx.policy.secrets).prepare(names, SLACK_TOOL).values
+    except SecretError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    api = SlackWebApi(config.api_url, values[0])
+    try:
+        if args.slack_command == "check":
+            identity = api.auth_test()
+            print(
+                f"connected as {identity.get('user')} ({identity.get('user_id')}) "
+                f"in workspace {identity.get('team')}"
+            )
+            print(f"channel: {config.channel}")
+            mapped = ", ".join(f"{k} -> {v}" for k, v in config.users.items()) or "(none)"
+            print(f"mapped users: {mapped}")
+            if args.post:
+                api.post_message(
+                    config.channel,
+                    ":wave: aica is connected to this channel. Approval requests and "
+                    "finished tasks will appear here (INT-004).",
+                )
+                ctx.audit.record(
+                    category=EventCategory.TOOL_CALL,
+                    action="posted Slack connection test",
+                    outcome=Outcome.SUCCESS,
+                    tool=SLACK_TOOL,
+                    target=config.channel,
+                )
+                print("test message posted")
+            return 0
+        bridge = SlackBridge(
+            ctx.workspace.root,
+            config,
+            api,
+            policy_loader=lambda: load_policy(args.policy),
+            answerer=_slack_answerer(args) if config.questions else None,
+            actor=args.actor,
+        )
+        if args.slack_command == "sync":
+            result = bridge.sync()
+            _print_sync(result)
+            return 1 if result.errors else 0
+        bridge.bot_user_id = str(api.auth_test().get("user_id", "")) or None
+        ctx.audit.record(
+            category=EventCategory.TOOL_CALL,
+            action="slack bridge started",
+            outcome=Outcome.SUCCESS,
+            tool=SLACK_TOOL,
+            target=config.channel,
+        )
+        print(f"slack: bridge running for channel {config.channel}; Ctrl+C to stop")
+        stop = threading.Event()
+
+        def report(exc: Exception) -> None:
+            print(f"slack: {scrub(str(exc), values)}", file=sys.stderr)
+
+        try:
+            run_socket_mode(bridge, values[1], ctx.policy.network, stop, report, _print_sync)
+        except KeyboardInterrupt:
+            stop.set()
+        ctx.audit.record(
+            category=EventCategory.TOOL_CALL,
+            action="slack bridge stopped",
+            outcome=Outcome.SUCCESS,
+            tool=SLACK_TOOL,
+            target=config.channel,
+        )
+        print("slack: stopped")
+        return 0
+    except SlackError as exc:
+        print(scrub(str(exc), values), file=sys.stderr)
+        return 3
+    finally:
+        api.close()
+
+
 def cmd_approvals(args: argparse.Namespace) -> int:
     """API-014 / UX-008: pending approvals, and deciding them.
 
@@ -1298,8 +1489,14 @@ def cmd_approvals(args: argparse.Namespace) -> int:
             print(f"recorded; nothing has run (API-014): {entry.describe()}", file=sys.stderr)
             return 0
         decision = args.approvals_command == "approve"
-        entry = queue.decide(
-            args.id, policy.principal(args.actor), decision, " ".join(args.note or [])
+        entry = decide_and_record(
+            queue,
+            args.id,
+            policy.principal(args.actor),
+            decision,
+            AuditLog(JsonlAuditSink(root / ".aica" / "audit"), actor=args.actor),
+            " ".join(args.note or []),
+            via="cli",
         )
         print(f"{entry.id}: {entry.state.value} by {entry.decided_by}")
         print("nothing was run; re-send the action to execute it", file=sys.stderr)
@@ -1748,6 +1945,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--describe", nargs="*", help="migration: the change to make")
     sp.add_argument("--model")
     sp.set_defaults(func=cmd_db)
+
+    sp = sub.add_parser(
+        "slack", help="Slack approvals, task updates and questions over Socket Mode (INT-004)"
+    )
+    sp.add_argument(
+        "slack_command",
+        choices=["check", "sync", "run"],
+        help="check: verify the setup; sync: post once; run: the Socket Mode bridge",
+    )
+    sp.add_argument("--slack-file", help="Slack configuration (default: config/slack.toml)")
+    sp.add_argument("--post", action="store_true", help="check: post a test message")
+    sp.set_defaults(func=cmd_slack)
 
     sp = sub.add_parser("repo", help="the hosted repository behind an approved connector (INT-006)")
     sp.add_argument(
