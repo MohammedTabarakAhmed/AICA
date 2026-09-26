@@ -1,0 +1,18 @@
+# Held-out golden task (EVAL-001). Never used for training (BRD 13).
+id = "wrap-words"
+version = 1
+kind = "agent"
+description = "wrap() splits words in half instead of wrapping between them"
+tags = ["python", "bugfix", "strings"]
+task = "The test suite fails. Fix wrap in src/wrapping.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 10
+max_seconds = 180
+
+scripted = ["{\n \"summary\": \"read, fix, verify\",\n \"steps\": [\n  {\n   \"intent\": \"read the module\",\n   \"tool\": \"fs.read\",\n   \"arguments\": {\n    \"path\": \"src/wrapping.py\"\n   }\n  },\n  {\n   \"intent\": \"write the fixed module\",\n   \"tool\": \"fs.write\",\n   \"arguments\": {\n    \"path\": \"src/wrapping.py\",\n    \"content\": \"\\\"\\\"\\\"Text wrapping.\\\"\\\"\\\"\\n\\n\\ndef wrap(text: str, width: int) -> list[str]:\\n    \\\"\\\"\\\"Greedy word wrap: lines of at most width characters, never splitting a word\\n    shorter than width.\\\"\\\"\\\"\\n    lines: list[str] = []\\n    current = \\\"\\\"\\n    for word in text.split():\\n        if current and len(current) + 1 + len(word) > width:\\n            lines.append(current)\\n            current = word\\n        else:\\n            current = f\\\"{current} {word}\\\" if current else word\\n    if current:\\n        lines.append(current)\\n    return lines\\n\"\n   }\n  },\n  {\n   \"intent\": \"run the suite\",\n   \"tool\": \"test.run\",\n   \"arguments\": {\n    \"kind\": \"unit\"\n   }\n  }\n ],\n \"verification\": [\n  \"unit\"\n ]\n}"]
+
+[files]
+"src/__init__.py" = ""
+"src/wrapping.py" = "\"\"\"Text wrapping.\"\"\"\n\n\ndef wrap(text: str, width: int) -> list[str]:\n    \"\"\"Greedy word wrap: lines of at most width characters, never splitting a word\n    shorter than width.\"\"\"\n    return [text[i : i + width] for i in range(0, len(text), width)]\n"
+"tests/test_wrapping.py" = "from src.wrapping import wrap\n\n\ndef test_wraps_between_words() -> None:\n    assert wrap(\"the quick brown fox\", 10) == [\"the quick\", \"brown fox\"]\n\n\ndef test_short() -> None:\n    assert wrap(\"hi\", 10) == [\"hi\"]\n\n\ndef test_empty() -> None:\n    assert wrap(\"\", 5) == []\n"
