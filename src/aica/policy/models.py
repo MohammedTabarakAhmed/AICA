@@ -1,6 +1,6 @@
 """Policy schema.
 
-Operationalizes PROJECT_BRIEF "Bounded Autonomy" and BRD AG-007, SAFE-001, SAFE-005,
+Operationalizes bounded autonomy: BRD AG-007, SAFE-001, SAFE-005,
 GIT-007 and section 16 (environment classification, tool allow/deny, network destination
 policy). All fields are validated; an invalid policy file must fail loudly rather than
 degrade to permissive defaults.

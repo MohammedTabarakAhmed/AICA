@@ -3,29 +3,40 @@
 Implementation of the *Enhanced AI Coding Agent BRD v3*
 (`docs/brd/Enhanced_AI_Coding_Agent_BRD_Functional_v3.docx`).
 
-Read `CLAUDE.md` first. Requirement tracking lives in `ACCEPTANCE.md`; resumable
-progress in `.claude-progress.md`.
+Start with `BRIEFER.md` (a plain-English map of the project and where it stands), then
+`CLAUDE.md` (how work is done here). Requirement tracking lives in `ACCEPTANCE.md`; the
+decision log and next action in `.claude-progress.md`.
 
 ## Repository layout
 
 ```
-config/policy.toml     bounded autonomy, approval, network and git policy (AG-007, SAFE-*)
-config/models.toml     approved models; credentials come from named env vars (MM-001)
+config/policy.toml     bounded autonomy, approval, network, secrets and git policy (AG-007, SAFE-*)
+config/models.toml     approved models and routing; credentials come from named env vars (MM-001)
+config/*.example       templates for databases, MCP servers, repositories and Slack
 src/aica/policy/       policy schema + loader, run budget, cancellation token
 src/aica/safety/       command classifier, secret redaction, prompt-injection defense
 src/aica/audit/        redacted audit events + JSONL sink
 src/aica/workspace/    path guard, Git guard (GIT-010), snapshots (FS-007), project conventions (CC-004, MEM-004)
-src/aica/models/       model adapter protocol, OpenAI-compatible adapter, gateway (MM-008)
+src/aica/models/       model adapters, gateway, routing and fallback (MM-*)
 src/aica/rag/          AST chunking, embeddings, SQLite index (RAG-001..010)
 src/aica/tools/        filesystem, shell, git, tests, retrieval, browser tools + registry (MCP-002..006)
 src/aica/testing/      test discovery, result parsing, verification ledger, test generation (TEST-001..009)
 src/aica/chat/         sessions/memory, assistant, log diagnostics, commit messages, task report (CHAT-*, MEM-*, GIT-006)
-src/aica/agent/        the agent loop: plan, execute, observe, adapt, report (AG-001..010)
+src/aica/agent/        the agent loop: plan, execute, observe, adapt, report; subagents (AG-001..010)
+src/aica/review/       code and security review of a change (REV-001..007)
+src/aica/evaluation/   golden tasks, metrics, release gates (EVAL-001..009)
+src/aica/adaptation/   fine-tuning data, datasets, training jobs, adapters and promotion (BRD 13)
+src/aica/admin/        RBAC, approval queue, controls, usage, retention (ADM-*, SEC-*)
 src/aica/database/     SQL classification, dialects, connections, migrations (DB-001..007)
 src/aica/mcp/          MCP client: stdio JSON-RPC, handshake, tool discovery (MCP-001/007)
-src/aica/api/          HTTP API: sessions, tasks, event streaming, tools (API-001..011)
+src/aica/integrations/ GitHub connector and Slack bridge (INT-004, INT-006)
+src/aica/api/          HTTP API: sessions, tasks, event streaming, tools (API-*)
+src/aica/web/          the web page served at /ui/ (INT-003)
 src/aica/cli.py        the `aica` command-line interface (INT-002)
-tests/                 unit suite; tests/integration/ is the cross-module suite (552 tests total)
+ide/vscode/            the VS Code extension (INT-001)
+evaluation/tasks/      golden tasks: the exam; evaluation/training/ holds the practice tasks
+training/kaggle/       the QLoRA notebook and the Kaggle walkthrough
+tests/                 unit suite; tests/integration/ is the cross-module suite
 docs/brd/              the BRD (functional source of truth)
 scripts/verify.*       one-shot lint + format + type + test run
 ```
@@ -53,9 +64,17 @@ aica db query --sql "SELECT ..."    REM run a read-only query; writes need the t
 aica mcp tools                      REM discover the tools your approved MCP servers offer
 aica serve --port 8000              REM run the HTTP API (loopback, token-authenticated)
 aica run <command>                  REM policy-checked execution
+aica approvals list                 REM pending approvals; approve/reject by id
+aica eval run --out report.json     REM run the golden tasks against a model
+aica adapt practice                 REM fine-tuning data: see BRIEFER.md for the full sequence
+aica slack run                      REM Slack approvals, task updates and questions
+aica repo pr --number 11            REM a pull request from the approved GitHub connector
+aica models                         REM approved models, their status and routing
 aica policy                         REM the effective policy and available tools
 aica audit                          REM recent material actions
 ```
+
+`aica --help` lists every command; each has its own `--help`.
 
 `aica ask`, `aica complete`, `aica debug`, `aica gen-tests` and `aica commit-message`
 additionally need a reachable model: set the credential
@@ -130,7 +149,7 @@ Copy `.env.example` to `.env` (never committed). Policy is read from
 (override with `AICA_AUDIT_DIR`). Model credentials are supplied only through
 environment variables.
 
-## Security posture (Phase 0)
+## Security posture
 
 - Network access is **deny by default**; hosts must be allowlisted in policy.
 - Destructive, privileged, external, production, file-delete, protected-branch-commit,

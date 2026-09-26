@@ -23,6 +23,10 @@ enterprise governance.
    decision in `ACCEPTANCE.md` or `.claude-progress.md`.
 6. Never mark a requirement complete merely because code exists. Verification is
    required.
+7. When instructions conflict, the order is: system/tool safety constraints, then
+   explicit user authorization, then this file, then the BRD, then `ACCEPTANCE.md`,
+   then existing project conventions, then `.claude-progress.md`. This file governs
+   *how* work is done; it never adds, removes or alters product requirements.
 
 ## 3. Mandatory Working Loop
 
@@ -178,6 +182,10 @@ Use the BRD IDs in implementation notes where useful, for example:
 Keep `ACCEPTANCE.md` synchronized with implemented and verified requirements.
 
 ## 12. Progress State
+
+Start every session with `BRIEFER.md`: the plain-English map of what the product is,
+where it stands, the current multi-step workflow and what to do when stuck. Keep it
+current whenever the status or the next action changes.
 
 `.claude-progress.md` is the resumability/checkpoint file.
 

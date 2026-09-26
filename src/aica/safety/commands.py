@@ -1,4 +1,4 @@
-"""Command classification and policy decision (EXEC-006, SECURITY_GUARDRAILS "Command Safety").
+"""Command classification and policy decision (EXEC-006).
 
 Commands are classified into read-only / development / privileged / destructive /
 external before execution. Classification is conservative and pattern-based; anything
