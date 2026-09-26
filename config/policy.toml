@@ -30,10 +30,13 @@ mode = "allowlist"
 # authorization, for the Groq and Gemini free tiers.
 # api.github.com (the INT-006 connector's API) and github.com (git.push to this project's
 # remote) were added on 2026-09-25 with the user's authorization.
+# slack.com (Web API) and wss-primary.slack.com (the Socket Mode WebSocket) were added on
+# 2026-09-26 with the user's authorization, for INT-004. Named hosts, not *.slack.com.
 allowed_hosts = [
   "api.deepseek.com", "api.z.ai", "127.0.0.1",
   "api.groq.com", "generativelanguage.googleapis.com",
   "api.github.com", "github.com",
+  "slack.com", "wss-primary.slack.com",
 ]
 
 [approval]
@@ -91,6 +94,20 @@ name = "github_token"
 env_var = "GITHUB_TOKEN"
 allowed_tools = ["repo.*"]
 description = "GitHub token for the repository connector (config/repositories.toml)"
+
+# INT-004, declared 2026-09-26 with the user's authorization. Only the Slack bridge may
+# receive them; values live in the user's environment, never here.
+[[secrets.definitions]]
+name = "slack_bot_token"
+env_var = "SLACK_BOT_TOKEN"
+allowed_tools = ["integration.slack"]
+description = "Slack bot token (xoxb-) for the INT-004 bridge (config/slack.toml)"
+
+[[secrets.definitions]]
+name = "slack_app_token"
+env_var = "SLACK_APP_TOKEN"
+allowed_tools = ["integration.slack"]
+description = "Slack app-level token (xapp-, connections:write) for Socket Mode"
 
 [rbac]
 # ADM-001 / SEC-006. Off by default, so a single-developer workspace behaves exactly as
