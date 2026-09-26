@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-iso-date"
+version = 1
+kind = "agent"
+description = "parse_date() accepts impossible dates"
+tags = ["python", "bugfix", "dates"]
+task = "The test suite fails. Fix src/dates.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/dates.py" = "\"\"\"Dates.\"\"\"\n\n\ndef parse_date(text: str) -> tuple[int, int, int]:\n    \"\"\"(year, month, day) from YYYY-MM-DD; an impossible date is a ValueError.\"\"\"\n    year, month, day = text.split(\"-\")\n    return int(year), int(month), int(day)\n"
+"tests/test_dates.py" = "import pytest\n\nfrom src.dates import parse_date\n\n\ndef test_parse() -> None:\n    assert parse_date(\"2026-09-26\") == (2026, 9, 26)\n\n\n@pytest.mark.parametrize(\"text\", [\"2026-13-01\", \"2026-02-30\"])\ndef test_impossible(text: str) -> None:\n    with pytest.raises(ValueError):\n        parse_date(text)\n"

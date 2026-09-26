@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from aica.adaptation import (
     screen,
     verify_dataset,
 )
+from aica.adaptation.export import export_for_kaggle
 from aica.adaptation.registry import CandidateSource, security_gate
 from aica.adaptation.trajectories import Step, extract
 from aica.admin.rbac import NotPermitted, Role, RoleBinding, SeparationOfDuties
@@ -172,6 +174,27 @@ def test_a_restricted_path_excludes_the_run() -> None:
     assert any("restricted path config/.env" in r for r in verdict.safety)
 
 
+def test_overriding_the_uncommitted_change_protection_excludes_the_run() -> None:
+    step = Step("fix", "fs.edit", {"path": "src/a.py", "allow_dirty": True}, "succeeded")
+    verdict = screen(_trajectory(steps=(step,)), AdaptationPolicy())
+    assert any("uncommitted-change protection" in r for r in verdict.safety)
+
+
+def test_a_filled_step_keeps_its_plan_and_request_and_its_request_is_screened() -> None:
+    step = Step(
+        "fix",
+        "fs.write",
+        {"path": "src/a.py", "content": "x = 1\n"},
+        "succeeded",
+        planned_arguments={"path": "src/a.py"},
+        fill_prompt="results: api_key = 'sk-live-0123456789abcdefghijklmnop'",
+    )
+    trajectory = _trajectory(steps=(step,))
+    assert Trajectory.from_json(trajectory.to_json()) == trajectory
+    verdict = screen(trajectory, AdaptationPolicy())
+    assert any("secret-like" in r for r in verdict.safety)
+
+
 def test_a_destructive_command_excludes_the_run() -> None:
     step = Step("clean", "shell.run", {"command": "rm -rf build"}, "succeeded")
     verdict = screen(_trajectory(steps=(step,)), AdaptationPolicy())
@@ -281,7 +304,7 @@ def _approved(tmp_path: Path, *tasks: str, policy: Policy | None = None) -> Poli
 def test_a_dataset_is_versioned_by_content_and_written_once(tmp_path: Path) -> None:
     policy = _approved(tmp_path, "first", "second")
     manifest = build_dataset(tmp_path, policy, policy.principal("admin"))
-    assert manifest.examples == 2 and manifest.format == "chat-sft-v1"
+    assert manifest.examples == 2 and manifest.format == "chat-sft-v2"
     again = build_dataset(tmp_path, policy, policy.principal("admin"))
     assert again.version == manifest.version  # same examples, same dataset
     lines = (
@@ -672,3 +695,45 @@ def test_cli_models_refuses_a_disabled_model_sec_007(
     capsys.readouterr()
     assert run(tmp_path, "ask", "--model", "deepseek-chat", "hello") == 3
     assert "incident" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ export for Kaggle
+def test_an_export_is_reviewable_private_and_carries_no_local_path(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    out = tmp_path / "export"
+    policy = _policy()
+    summary = export_for_kaggle(tmp_path, job, out, "dana-k", policy.principal("admin"))
+
+    assert summary["examples"] == 2 and summary["kinds"] == {"plan": 2}
+    shipped = json.loads((out / "job.json").read_text(encoding="utf-8"))
+    assert "path" not in shipped["dataset"]  # the developer's home directory stays here
+    assert str(tmp_path) not in "".join(p.read_text(encoding="utf-8") for p in out.rglob("*.*"))
+    kernel = json.loads((out / "kernel/kernel-metadata.json").read_text(encoding="utf-8"))
+    assert kernel["is_private"] is True and kernel["dataset_sources"] == [summary["kaggle_dataset"]]
+    assert (out / "kernel" / kernel["code_file"]).is_file()
+    body = (out / "train.jsonl").read_text(encoding="utf-8")
+    assert hashlib.sha256(body.encode("utf-8")).hexdigest() == summary["sha256"]
+    review = (out / "review.md").read_text(encoding="utf-8")
+    assert review.startswith("# Training examples (2)") and "### assistant" in review
+
+
+def test_an_export_with_anything_secret_like_is_refused_whole(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    notebook = tmp_path / "nb.ipynb"
+    notebook.write_text('{"token": "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"}', encoding="utf-8")
+    policy = _policy()
+    with pytest.raises(AdaptationError, match="secret-like"):
+        export_for_kaggle(
+            tmp_path, job, tmp_path / "out", "dana-k", policy.principal("admin"), notebook=notebook
+        )
+    assert not (tmp_path / "out").exists()
+
+
+def test_an_export_needs_the_administer_permission_and_a_real_username(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    policy = _policy()
+    with pytest.raises(AdaptationError, match="Kaggle username"):
+        export_for_kaggle(tmp_path, job, tmp_path / "o", "../evil", policy.principal("admin"))
+    rbac = _rbac_policy(dev=Role.DEVELOPER)
+    with pytest.raises(NotPermitted):
+        export_for_kaggle(tmp_path, job, tmp_path / "o", "dana-k", rbac.principal("dev"))

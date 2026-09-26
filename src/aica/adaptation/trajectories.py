@@ -54,6 +54,38 @@ class Step:
     tool: str
     arguments: dict[str, Any]
     status: str
+    # Set when the arguments were filled in after earlier steps ran (see PlanStep): what the
+    # plan said, and the request that produced the rest.
+    planned_arguments: dict[str, Any] | None = None
+    fill_prompt: str = ""
+
+    @property
+    def deferred(self) -> bool:
+        return self.planned_arguments is not None
+
+    def to_json(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "intent": self.intent,
+            "tool": self.tool,
+            "arguments": self.arguments,
+            "status": self.status,
+        }
+        if self.deferred:  # absent otherwise, so earlier runs keep their ids
+            data["planned_arguments"] = self.planned_arguments
+            data["fill_prompt"] = self.fill_prompt
+        return data
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> Step:
+        planned = data.get("planned_arguments")
+        return cls(
+            intent=str(data["intent"]),
+            tool=str(data["tool"]),
+            arguments=dict(data.get("arguments", {})),
+            status=str(data["status"]),
+            planned_arguments=dict(planned) if isinstance(planned, dict) else None,
+            fill_prompt=str(data.get("fill_prompt", "")),
+        )
 
 
 @dataclass(frozen=True)
@@ -83,10 +115,7 @@ class Trajectory:
             "task": self.task,
             "summary": self.summary,
             "model": self.model,
-            "steps": [
-                {"intent": s.intent, "tool": s.tool, "arguments": s.arguments, "status": s.status}
-                for s in self.steps
-            ],
+            "steps": [s.to_json() for s in self.steps],
             "verification": self.verification,
             "superseded_failures": self.superseded_failures,
             "unresolved_failures": self.unresolved_failures,
@@ -103,15 +132,7 @@ class Trajectory:
             task=str(data["task"]),
             summary=str(data.get("summary", "")),
             model=str(data.get("model", "")),
-            steps=tuple(
-                Step(
-                    intent=str(s["intent"]),
-                    tool=str(s["tool"]),
-                    arguments=dict(s.get("arguments", {})),
-                    status=str(s["status"]),
-                )
-                for s in data.get("steps", [])
-            ),
+            steps=tuple(Step.from_json(s) for s in data.get("steps", [])),
             verification={str(k): str(v) for k, v in data.get("verification", {}).items()},
             superseded_failures=int(data.get("superseded_failures", 0)),
             unresolved_failures=int(data.get("unresolved_failures", 0)),
@@ -123,6 +144,8 @@ class Trajectory:
         for step in self.steps:
             out.append(step.intent)
             out.append(json.dumps(step.arguments, ensure_ascii=False))
+            if step.fill_prompt:  # carries earlier results: repository content
+                out.append(step.fill_prompt)
         return out
 
 
@@ -135,7 +158,16 @@ def from_state(session_id: str, owner: str | None, state: AgentState) -> Traject
         summary=plan.summary,
         model=plan.model,
         steps=tuple(
-            Step(s.intent, s.tool, dict(s.arguments), s.status.value)
+            Step(
+                s.intent,
+                s.tool,
+                dict(s.arguments),
+                s.status.value,
+                planned_arguments=(
+                    dict(s.planned_arguments) if s.planned_arguments is not None else None
+                ),
+                fill_prompt=s.fill_prompt,
+            )
             for s in plan.steps
             if not s.superseded
         ),
@@ -222,6 +254,10 @@ def screen(trajectory: Trajectory, policy: AdaptationPolicy) -> ScreenResult:
         for path in _paths_in(step.arguments):
             if _restricted(path, policy.exclude_paths):
                 result.safety.append(f"touches restricted path {path}")
+        if step.arguments.get("allow_dirty") is True:
+            # A run can ask for this where nothing enforces it (a workspace without Git); a
+            # model that learned it would ask to overwrite developers' work (GIT-010).
+            result.safety.append(f"overrides the uncommitted-change protection ({step.tool})")
         command = step.arguments.get("command")
         if isinstance(command, str) and command.strip():
             classification = classify_command(command)

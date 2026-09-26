@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-fizzbuzz"
+version = 1
+kind = "agent"
+description = "fizzbuzz() checks 3 before 15"
+tags = ["python", "bugfix", "logic"]
+task = "The test suite fails. Fix src/fizz.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/fizz.py" = "\"\"\"FizzBuzz.\"\"\"\n\n\ndef fizzbuzz(n: int) -> str:\n    \"\"\"Fizz for multiples of 3, Buzz for 5, FizzBuzz for both, else the number.\"\"\"\n    if n % 3 == 0:\n        return \"Fizz\"\n    if n % 5 == 0:\n        return \"Buzz\"\n    if n % 15 == 0:\n        return \"FizzBuzz\"\n    return str(n)\n"
+"tests/test_fizz.py" = "from src.fizz import fizzbuzz\n\n\ndef test_values() -> None:\n    assert [fizzbuzz(n) for n in (1, 3, 5, 15, 30)] == [\"1\", \"Fizz\", \"Buzz\", \"FizzBuzz\", \"FizzBuzz\"]\n"
