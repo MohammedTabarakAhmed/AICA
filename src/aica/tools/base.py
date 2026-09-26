@@ -1,4 +1,4 @@
-"""Tool framework (AGENTS.md "Tool Use"; MCP-002/003/004/006 baseline).
+"""Tool framework (MCP-002/003/004/006 baseline).
 
 Every tool has: a name, a purpose, a pydantic argument schema (validated before execution),
 a policy check (allowed-tools list, approval categories) and audit on every call. Tools
