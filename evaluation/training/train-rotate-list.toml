@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-rotate-list"
+version = 1
+kind = "agent"
+description = "rotate() turns the wrong way and fails for large k"
+tags = ["python", "bugfix", "collections"]
+task = "The test suite fails. Fix src/rotation.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/rotation.py" = "\"\"\"Rotation.\"\"\"\n\n\ndef rotate(items: list[int], k: int) -> list[int]:\n    \"\"\"Rotate right by k places.\"\"\"\n    return items[k:] + items[:k]\n"
+"tests/test_rotation.py" = "from src.rotation import rotate\n\n\ndef test_right() -> None:\n    assert rotate([1, 2, 3, 4], 1) == [4, 1, 2, 3]\n\n\ndef test_large_k() -> None:\n    assert rotate([1, 2, 3], 4) == [3, 1, 2]\n\n\ndef test_empty() -> None:\n    assert rotate([], 3) == []\n"

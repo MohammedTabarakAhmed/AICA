@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-stack-empty"
+version = 1
+kind = "agent"
+description = "Stack.pop() returns None on an empty stack instead of raising"
+tags = ["python", "bugfix", "classes"]
+task = "The test suite fails. Fix src/stack.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/stack.py" = "\"\"\"A stack.\"\"\"\n\n\nclass Stack:\n    def __init__(self) -> None:\n        self._items: list[int] = []\n\n    def push(self, item: int) -> None:\n        self._items.append(item)\n\n    def pop(self) -> int | None:\n        \"\"\"Remove and return the top item; an empty stack is an IndexError.\"\"\"\n        if not self._items:\n            return None\n        return self._items.pop()\n"
+"tests/test_stack.py" = "import pytest\n\nfrom src.stack import Stack\n\n\ndef test_lifo() -> None:\n    s = Stack()\n    s.push(1)\n    s.push(2)\n    assert s.pop() == 2\n\n\ndef test_empty() -> None:\n    with pytest.raises(IndexError):\n        Stack().pop()\n"

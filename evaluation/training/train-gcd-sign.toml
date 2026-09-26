@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-gcd-sign"
+version = 1
+kind = "agent"
+description = "gcd() can return a negative number"
+tags = ["python", "bugfix", "math"]
+task = "The test suite fails. Fix src/divisors.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/divisors.py" = "\"\"\"Divisors.\"\"\"\n\n\ndef gcd(a: int, b: int) -> int:\n    \"\"\"Greatest common divisor, never negative.\"\"\"\n    while b:\n        a, b = b, a % b\n    return a\n"
+"tests/test_divisors.py" = "from src.divisors import gcd\n\n\ndef test_gcd() -> None:\n    assert gcd(12, 18) == 6\n\n\ndef test_signs() -> None:\n    assert gcd(4, -6) == 2\n    assert gcd(-4, -6) == 2\n"

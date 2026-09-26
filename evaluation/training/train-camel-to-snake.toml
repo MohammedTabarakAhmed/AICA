@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-camel-to-snake"
+version = 1
+kind = "agent"
+description = "camel_to_snake() only lower-cases"
+tags = ["python", "bugfix", "strings"]
+task = "The test suite fails. Fix src/naming.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/naming.py" = "\"\"\"Identifier naming.\"\"\"\n\n\ndef camel_to_snake(name: str) -> str:\n    \"\"\"userId -> user_id.\"\"\"\n    return name.lower()\n"
+"tests/test_naming.py" = "from src.naming import camel_to_snake\n\n\ndef test_convert() -> None:\n    assert camel_to_snake(\"userId\") == \"user_id\"\n    assert camel_to_snake(\"getHttpUrl\") == \"get_http_url\"\n\n\ndef test_plain() -> None:\n    assert camel_to_snake(\"simple\") == \"simple\"\n"

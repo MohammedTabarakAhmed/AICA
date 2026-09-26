@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-transpose"
+version = 1
+kind = "agent"
+description = "transpose() assumes a square matrix"
+tags = ["python", "bugfix", "algorithms"]
+task = "The test suite fails. Fix src/matrix.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/matrix.py" = "\"\"\"Matrices.\"\"\"\n\n\ndef transpose(m: list[list[int]]) -> list[list[int]]:\n    \"\"\"Rows become columns.\"\"\"\n    return [[m[j][i] for j in range(len(m))] for i in range(len(m))]\n"
+"tests/test_matrix.py" = "from src.matrix import transpose\n\n\ndef test_square() -> None:\n    assert transpose([[1, 2], [3, 4]]) == [[1, 3], [2, 4]]\n\n\ndef test_rectangle() -> None:\n    assert transpose([[1, 2, 3], [4, 5, 6]]) == [[1, 4], [2, 5], [3, 6]]\n"

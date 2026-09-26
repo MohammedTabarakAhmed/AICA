@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-average-empty"
+version = 1
+kind = "agent"
+description = "average() of nothing must be a ValueError, not ZeroDivisionError"
+tags = ["python", "bugfix", "validation"]
+task = "The test suite fails. Fix src/averages.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/averages.py" = "\"\"\"Averages.\"\"\"\n\n\ndef average(values: list[float]) -> float:\n    \"\"\"Arithmetic mean; an empty list is a ValueError.\"\"\"\n    return sum(values) / len(values)\n"
+"tests/test_averages.py" = "import pytest\n\nfrom src.averages import average\n\n\ndef test_mean() -> None:\n    assert average([1, 2, 3]) == 2\n\n\ndef test_empty() -> None:\n    with pytest.raises(ValueError):\n        average([])\n"

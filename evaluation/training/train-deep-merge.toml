@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-deep-merge"
+version = 1
+kind = "agent"
+description = "deep_merge() must merge nested dictionaries without mutating inputs"
+tags = ["python", "bugfix", "collections"]
+task = "The test suite fails. Fix src/merging.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/merging.py" = "\"\"\"Dictionary merging.\"\"\"\n\nfrom typing import Any\n\n\ndef deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:\n    \"\"\"override wins; nested dictionaries are merged key by key.\"\"\"\n    return {**base, **override}\n"
+"tests/test_merging.py" = "from src.merging import deep_merge\n\n\ndef test_flat() -> None:\n    assert deep_merge({\"a\": 1}, {\"b\": 2}) == {\"a\": 1, \"b\": 2}\n\n\ndef test_nested() -> None:\n    assert deep_merge({\"a\": {\"x\": 1}}, {\"a\": {\"y\": 2}}) == {\"a\": {\"x\": 1, \"y\": 2}}\n\n\ndef test_inputs_untouched() -> None:\n    base = {\"a\": {\"x\": 1}}\n    deep_merge(base, {\"a\": {\"x\": 2}})\n    assert base == {\"a\": {\"x\": 1}}\n"

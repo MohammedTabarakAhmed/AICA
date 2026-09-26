@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-digit-sum"
+version = 1
+kind = "agent"
+description = "digit_sum() fails for negative numbers"
+tags = ["python", "bugfix", "math"]
+task = "The test suite fails. Fix src/digits.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/digits.py" = "\"\"\"Digits.\"\"\"\n\n\ndef digit_sum(n: int) -> int:\n    \"\"\"Sum of the decimal digits of n, ignoring its sign.\"\"\"\n    return sum(int(c) for c in str(n))\n"
+"tests/test_digits.py" = "from src.digits import digit_sum\n\n\ndef test_positive() -> None:\n    assert digit_sum(123) == 6\n\n\ndef test_negative() -> None:\n    assert digit_sum(-123) == 6\n"

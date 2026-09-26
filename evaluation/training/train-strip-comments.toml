@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-strip-comments"
+version = 1
+kind = "agent"
+description = "strip_comments() deletes code before a trailing comment"
+tags = ["python", "bugfix", "parsing"]
+task = "The test suite fails. Fix src/comments.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/comments.py" = "\"\"\"Comment stripping.\"\"\"\n\n\ndef strip_comments(source: str) -> str:\n    \"\"\"Remove # comments; drop lines that were only a comment; strip trailing spaces.\"\"\"\n    return \"\\n\".join(line for line in source.splitlines() if \"#\" not in line)\n"
+"tests/test_comments.py" = "from src.comments import strip_comments\n\n\ndef test_strip() -> None:\n    assert strip_comments(\"x = 1  # note\\n# full\\ny = 2\") == \"x = 1\\ny = 2\"\n"

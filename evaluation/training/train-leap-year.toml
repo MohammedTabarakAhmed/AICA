@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-leap-year"
+version = 1
+kind = "agent"
+description = "is_leap() ignores the century rules"
+tags = ["python", "bugfix", "dates"]
+task = "The test suite fails. Fix src/calendar_rules.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/calendar_rules.py" = "\"\"\"Calendar rules.\"\"\"\n\n\ndef is_leap(year: int) -> bool:\n    \"\"\"Gregorian leap year.\"\"\"\n    return year % 4 == 0\n"
+"tests/test_calendar_rules.py" = "from src.calendar_rules import is_leap\n\n\ndef test_leap() -> None:\n    assert is_leap(2024) and is_leap(2000)\n\n\ndef test_not_leap() -> None:\n    assert not is_leap(2023) and not is_leap(1900)\n"

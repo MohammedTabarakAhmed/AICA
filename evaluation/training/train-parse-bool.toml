@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-parse-bool"
+version = 1
+kind = "agent"
+description = "parse_bool() must accept yes/no/1/0 and reject anything else"
+tags = ["python", "bugfix", "parsing"]
+task = "The test suite fails. Fix src/flags.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/flags.py" = "\"\"\"Flag parsing.\"\"\"\n\n\ndef parse_bool(text: str) -> bool:\n    \"\"\"Parse true/false, yes/no, on/off or 1/0 (any case); anything else is an error.\"\"\"\n    return text == \"true\"\n"
+"tests/test_flags.py" = "import pytest\n\nfrom src.flags import parse_bool\n\n\n@pytest.mark.parametrize(\"text\", [\"true\", \"Yes\", \"ON\", \"1\"])\ndef test_true(text: str) -> None:\n    assert parse_bool(text) is True\n\n\n@pytest.mark.parametrize(\"text\", [\"false\", \"No\", \"off\", \"0\"])\ndef test_false(text: str) -> None:\n    assert parse_bool(text) is False\n\n\ndef test_unknown() -> None:\n    with pytest.raises(ValueError):\n        parse_bool(\"maybe\")\n"

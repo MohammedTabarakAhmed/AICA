@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-csv-line"
+version = 1
+kind = "agent"
+description = "parse_line() splits inside quoted fields"
+tags = ["python", "bugfix", "parsing"]
+task = "The test suite fails. Fix src/csvline.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/csvline.py" = "\"\"\"CSV lines.\"\"\"\n\n\ndef parse_line(line: str) -> list[str]:\n    \"\"\"Fields of one CSV line; commas inside double quotes do not split.\"\"\"\n    return line.split(\",\")\n"
+"tests/test_csvline.py" = "from src.csvline import parse_line\n\n\ndef test_plain() -> None:\n    assert parse_line(\"a,b\") == [\"a\", \"b\"]\n\n\ndef test_quoted() -> None:\n    assert parse_line('a,\"b,c\",d') == [\"a\", \"b,c\", \"d\"]\n"

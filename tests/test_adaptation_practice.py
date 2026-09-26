@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from aica.adaptation.curation import CandidateStore
+from aica.adaptation.curation import CandidateStore, build_dataset
 from aica.adaptation.practice import (
     PRACTICE_KEY,
     UsageMeter,
@@ -15,6 +15,7 @@ from aica.adaptation.practice import (
     run_practice,
 )
 from aica.agent.loop import STATE_KEY
+from aica.agent.plan import FILL_SYSTEM
 from aica.chat.session import SessionStore
 from aica.cli import main
 from aica.evaluation.tasks import SuiteError, TaskSuite, load_suite, load_task
@@ -118,3 +119,57 @@ def test_the_cli_refuses_to_practise_on_the_golden_suite(
     code = main(["-w", str(tmp_path), "adapt", "practice", "--tasks", str(GOLDEN)])
     assert code == 2
     assert "own exam" in capsys.readouterr().err
+
+
+def test_a_deferred_write_becomes_a_plan_example_and_a_fill_example(tmp_path: Path) -> None:
+    """The dataset shows the plan as it was made (the write waits for the read) and then the
+    fill request answered with what worked: a model learns to read before it writes."""
+    fixed = (
+        '"""Arithmetic helpers."""\n\n\ndef ratio(values: list[float]) -> float:\n'
+        '    """Ratio of the first two values."""\n    if len(values) < 2:\n'
+        '        raise ValueError("two values are required")\n    return values[0] / values[1]\n'
+    )
+    plan = {
+        "summary": "read, rewrite, verify",
+        "steps": [
+            {"intent": "read", "tool": "fs.read", "arguments": {"path": "src/calc.py"}},
+            {
+                "intent": "rewrite",
+                "tool": "fs.write",
+                "arguments": {"path": "src/calc.py"},
+                "deferred": True,
+            },
+            {"intent": "test", "tool": "test.run", "arguments": {"kind": "unit"}},
+        ],
+        "verification": ["unit"],
+    }
+    suite = _task("train-deferred", plan)
+    replies = [json.dumps(plan), json.dumps({"arguments": {"content": fixed}})]
+    report = run_practice(tmp_path, suite, lambda: ScriptedAdapter(list(replies)), _policy(), "ops")
+    assert report.outcomes[0].passed and report.outcomes[0].session_id
+
+    policy = _policy()
+    store = CandidateStore(tmp_path)
+    store.collect(policy, policy.principal("ops"))
+    [candidate] = store.all()
+    store.decide(candidate["id"], policy.principal("reviewer"), approve=True)
+    manifest = build_dataset(tmp_path, policy, policy.principal("admin"))
+    assert manifest.examples == 2
+    lines = (
+        (tmp_path / ".aica/adaptation/datasets" / manifest.version / "train.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    first, second = (json.loads(line) for line in lines)
+    planned = json.loads(first["messages"][2]["content"])
+    assert planned["steps"][1] == {
+        "intent": "rewrite",
+        "tool": "fs.write",
+        "arguments": {"path": "src/calc.py"},
+        "deferred": True,
+    }
+    assert second["meta"]["kind"] == "fill" and second["messages"][0]["content"] == FILL_SYSTEM
+    assert "return values[0] / values[1]" in second["messages"][1]["content"]  # the read
+    assert json.loads(second["messages"][2]["content"]) == {
+        "arguments": {"path": "src/calc.py", "content": fixed}
+    }

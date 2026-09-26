@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-compact-none"
+version = 1
+kind = "agent"
+description = "compact() only removes None at the top level"
+tags = ["python", "bugfix", "recursion"]
+task = "The test suite fails. Fix src/compaction.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/compaction.py" = "\"\"\"Compaction.\"\"\"\n\nfrom typing import Any\n\n\ndef compact(data: dict[str, Any]) -> dict[str, Any]:\n    \"\"\"Remove keys whose value is None, at every depth.\"\"\"\n    return {k: v for k, v in data.items() if v is not None}\n"
+"tests/test_compaction.py" = "from src.compaction import compact\n\n\ndef test_top() -> None:\n    assert compact({\"a\": 1, \"b\": None}) == {\"a\": 1}\n\n\ndef test_nested() -> None:\n    assert compact({\"c\": {\"d\": None, \"e\": 2}}) == {\"c\": {\"e\": 2}}\n"

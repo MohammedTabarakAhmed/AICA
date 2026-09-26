@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-safe-divide"
+version = 1
+kind = "agent"
+description = "safe_divide() must return the default instead of raising"
+tags = ["python", "feature", "math"]
+task = "Make safe_divide in src/division.py return the default when dividing by zero, as its docstring says. Make every test pass, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/division.py" = "\"\"\"Division.\"\"\"\n\n\ndef safe_divide(a: float, b: float, default: float | None = None) -> float | None:\n    \"\"\"a / b, or default when b is zero.\"\"\"\n    return a / b\n"
+"tests/test_division.py" = "from src.division import safe_divide\n\n\ndef test_divides() -> None:\n    assert safe_divide(6, 3) == 2\n\n\ndef test_zero_gives_default() -> None:\n    assert safe_divide(1, 0) is None\n    assert safe_divide(1, 0, default=0.0) == 0.0\n"

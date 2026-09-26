@@ -1,0 +1,16 @@
+# Training task (BRD 13 practice run). Never part of the golden suite.
+id = "train-chunk-list"
+version = 1
+kind = "agent"
+description = "chunk() drops the final short chunk"
+tags = ["python", "bugfix", "collections"]
+task = "The test suite fails. Fix src/chunks.py so every test passes, then run the suite."
+verify = "{python} -m pytest tests -q -p no:cacheprovider"
+verify_kind = "unit"
+max_steps = 12
+max_seconds = 300
+
+[files]
+"src/__init__.py" = ""
+"src/chunks.py" = "\"\"\"Chunking.\"\"\"\n\n\ndef chunk(items: list[int], size: int) -> list[list[int]]:\n    \"\"\"Consecutive slices of at most size items; size must be positive.\"\"\"\n    return [items[i : i + size] for i in range(0, len(items) - size + 1, size)]\n"
+"tests/test_chunks.py" = "import pytest\n\nfrom src.chunks import chunk\n\n\ndef test_even() -> None:\n    assert chunk([1, 2, 3, 4], 2) == [[1, 2], [3, 4]]\n\n\ndef test_tail() -> None:\n    assert chunk([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]\n\n\ndef test_bad_size() -> None:\n    with pytest.raises(ValueError):\n        chunk([1], 0)\n"
