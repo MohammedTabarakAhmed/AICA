@@ -751,7 +751,9 @@ def test_failing_tests_before_any_change_are_the_baseline_not_a_failure(workspac
     ctx = make_ctx(workspace)
     command = f'"{sys.executable}" -m pytest tests -q -p no:cacheprovider'
     test_step = {"intent": "run tests", "tool": "test.run", "arguments": {"command": command}}
-    fixed_test = "def test_math():\n    assert 1 + 1 == 2\n"
+    # A different size from the red file: rewritten within the same second at the same size,
+    # Python would reuse the stale bytecode and the suite would stay red.
+    fixed_test = "def test_math():\n    assert 1 + 1 == 2  # fixed\n"
     adapter = ScriptedAdapter(
         [
             plan_json(
