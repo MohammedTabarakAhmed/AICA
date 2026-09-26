@@ -53,6 +53,7 @@ from aica.adaptation.curation import (
     build_dataset,
     list_datasets,
 )
+from aica.adaptation.export import export_for_kaggle
 from aica.adaptation.registry import AdapterRegistry, CandidateSource
 from aica.adaptation.training import Method, TrainingConfig, plan_training
 from aica.admin.approval_queue import (
@@ -1643,6 +1644,26 @@ def cmd_adapt(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 0
+        if command == "export":
+            summary = export_for_kaggle(root, args.job, args.out, args.kaggle_user, who)
+            ctx.audit.record(
+                category=EventCategory.ADMIN,
+                action=f"training job {args.job} staged for export",
+                outcome=Outcome.SUCCESS,
+                details={k: v for k, v in summary.items() if k != "out"},
+            )
+            kinds = ", ".join(f"{n} {k}" for k, n in sorted(summary["kinds"].items()))
+            out = summary["out"]
+            print(
+                f"staged in {out}: dataset {summary['dataset']}, {summary['examples']} "
+                f"example(s) ({kinds}) from {summary['trajectories']} run(s)\n"
+                f"read {out}/review.md before uploading; nothing has left this machine.\n"
+                f"upload (private):  kaggle datasets create -p {out}\n"
+                f"train (private):   kaggle kernels push -p {out}/kernel\n"
+                f"follow / fetch:    kaggle kernels status {summary['kaggle_kernel']}\n"
+                f"                   kaggle kernels output {summary['kaggle_kernel']} -p <dir>"
+            )
+            return 0
         registry = AdapterRegistry(root)
         if command == "register":
             record = registry.register(args.job, args.serving_id, args.artifact, who)
@@ -2183,6 +2204,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--method", choices=[m.value for m in Method], default=Method.QLORA.value)
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--rank", type=int, default=16)
+    ap.set_defaults(func=cmd_adapt)
+    ap = adapt.add_parser(
+        "export", help="stage a job for Kaggle, with a review of every example (uploads nothing)"
+    )
+    ap.add_argument("--job", required=True, help="job spec (config version)")
+    ap.add_argument("--kaggle-user", required=True, help="your Kaggle username")
+    ap.add_argument("--out", required=True, help="directory to stage into (replaced)")
     ap.set_defaults(func=cmd_adapt)
     ap = adapt.add_parser("register", help="record an adapter a trainer produced")
     ap.add_argument("--job", required=True, help="job spec (config version)")

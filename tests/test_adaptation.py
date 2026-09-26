@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from aica.adaptation import (
     screen,
     verify_dataset,
 )
+from aica.adaptation.export import export_for_kaggle
 from aica.adaptation.registry import CandidateSource, security_gate
 from aica.adaptation.trajectories import Step, extract
 from aica.admin.rbac import NotPermitted, Role, RoleBinding, SeparationOfDuties
@@ -693,3 +695,45 @@ def test_cli_models_refuses_a_disabled_model_sec_007(
     capsys.readouterr()
     assert run(tmp_path, "ask", "--model", "deepseek-chat", "hello") == 3
     assert "incident" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ export for Kaggle
+def test_an_export_is_reviewable_private_and_carries_no_local_path(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    out = tmp_path / "export"
+    policy = _policy()
+    summary = export_for_kaggle(tmp_path, job, out, "dana-k", policy.principal("admin"))
+
+    assert summary["examples"] == 2 and summary["kinds"] == {"plan": 2}
+    shipped = json.loads((out / "job.json").read_text(encoding="utf-8"))
+    assert "path" not in shipped["dataset"]  # the developer's home directory stays here
+    assert str(tmp_path) not in "".join(p.read_text(encoding="utf-8") for p in out.rglob("*.*"))
+    kernel = json.loads((out / "kernel/kernel-metadata.json").read_text(encoding="utf-8"))
+    assert kernel["is_private"] is True and kernel["dataset_sources"] == [summary["kaggle_dataset"]]
+    assert (out / "kernel" / kernel["code_file"]).is_file()
+    body = (out / "train.jsonl").read_text(encoding="utf-8")
+    assert hashlib.sha256(body.encode("utf-8")).hexdigest() == summary["sha256"]
+    review = (out / "review.md").read_text(encoding="utf-8")
+    assert review.startswith("# Training examples (2)") and "### assistant" in review
+
+
+def test_an_export_with_anything_secret_like_is_refused_whole(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    notebook = tmp_path / "nb.ipynb"
+    notebook.write_text('{"token": "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"}', encoding="utf-8")
+    policy = _policy()
+    with pytest.raises(AdaptationError, match="secret-like"):
+        export_for_kaggle(
+            tmp_path, job, tmp_path / "out", "dana-k", policy.principal("admin"), notebook=notebook
+        )
+    assert not (tmp_path / "out").exists()
+
+
+def test_an_export_needs_the_administer_permission_and_a_real_username(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    policy = _policy()
+    with pytest.raises(AdaptationError, match="Kaggle username"):
+        export_for_kaggle(tmp_path, job, tmp_path / "o", "../evil", policy.principal("admin"))
+    rbac = _rbac_policy(dev=Role.DEVELOPER)
+    with pytest.raises(NotPermitted):
+        export_for_kaggle(tmp_path, job, tmp_path / "o", "dana-k", rbac.principal("dev"))
