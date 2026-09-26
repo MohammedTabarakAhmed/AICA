@@ -42,3 +42,9 @@ Thumbs.db
 # config/databases.toml.example is the template that is.
 config/databases.toml
 var/
+
+# VS Code extension (INT-001): dependencies and build outputs, never committed.
+ide/vscode/node_modules/
+ide/vscode/out/
+ide/vscode/.vscode-test/
+ide/vscode/*.vsix

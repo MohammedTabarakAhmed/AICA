@@ -73,6 +73,7 @@ from aica.review.acceptance import (
     require_unchanged,
 )
 from aica.review.reviewer import DEFAULT_CHECKS, CodeReviewer, ReviewCheck, ReviewRequest
+from aica.safety.injection import wrap_untrusted
 from aica.tools import ToolContext, default_registry
 from aica.tools.base import ToolArgumentError, ToolError, ToolNotAllowed
 from aica.web import CONTENT_SECURITY_POLICY, STATIC_DIR
@@ -151,6 +152,31 @@ class ToolCallRequest(BaseModel):
     tool: str = Field(min_length=1, max_length=100)
     arguments: dict[str, Any] = Field(default_factory=dict)
     auto_approve: bool = False
+
+
+class ChatRequest(BaseModel):
+    """CHAT-001..005 over HTTP, for the IDE (INT-001): a repository-grounded answer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1, max_length=20_000)
+    # Optional editor context, e.g. the selected code; fenced as untrusted like retrieval.
+    context: str = Field(default="", max_length=60_000)
+    session_id: str | None = None  # continue a conversation; omitted starts one
+    depth: str = Field(default="normal", pattern="^(shallow|normal|deep)$")
+    model: str | None = None
+
+
+class CompleteRequest(BaseModel):
+    """CC-001..003 over HTTP, for the IDE's inline completion (INT-001)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prefix: str = Field(max_length=200_000)
+    suffix: str = Field(default="", max_length=200_000)
+    path: str | None = Field(default=None, max_length=1000)
+    max_tokens: int = Field(default=128, ge=1, le=1024)
+    model: str | None = None
 
 
 class ReviewRequestBody(BaseModel):
@@ -940,6 +966,87 @@ def create_app(settings: ApiSettings) -> FastAPI:
                 },
             )
             return {**report.to_dict(), "model_selection": chosen}
+        finally:
+            index.close()
+
+    # ------------------------------------------------------------------ INT-001
+    @app.post("/chat", dependencies=guard)
+    def chat(request: ChatRequest) -> dict[str, Any]:
+        """CHAT-001..005: answer a question about the repository, with its sources.
+
+        The IDE sends the question and, optionally, the code the developer selected. The
+        selection is editor content, so it is fenced as untrusted (SAFE-007) before it is
+        added to the question. The turn is saved to a session, so a follow-up can continue it.
+        """
+        ctx, index = build_context(request.session_id)
+        try:
+            session = (
+                load_session(request.session_id)
+                if request.session_id
+                else Session(
+                    workspace=str(settings.workspace.resolve()),
+                    title=request.question[:80],
+                    owner=settings.actor,
+                    policy_version=ctx.policy.version,
+                )
+            )
+            try:
+                selection = select_model(
+                    request.model, TaskKind.CHAT, audit=ctx.audit, session_id=session.session_id
+                )
+            except (ModelError, PermissionError) as exc:
+                raise HTTPException(status_code=503, detail=f"model unavailable: {exc}") from exc
+            session.model_name = selection.adapter.info.name
+            assistant = CodingAssistant(
+                selection.adapter,
+                index,
+                depth=request.depth,
+                workspace_root=ctx.workspace.root,
+                project_context=ProjectContextStore(ctx.workspace.root).load(),
+            )
+            question = request.question
+            if request.context.strip():
+                question += "\n\n" + wrap_untrusted(request.context, "editor selection")
+            try:
+                answer = assistant.ask(session, question)
+            except ModelError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            store().save(session)
+            return {
+                "session_id": session.session_id,
+                "answer": answer.text,
+                "model": answer.model,
+                "sources": answer.sources,
+                "model_selection": selection.describe(),
+            }
+        finally:
+            index.close()
+
+    @app.post("/complete", dependencies=guard)
+    def complete(request: CompleteRequest) -> dict[str, Any]:
+        """CC-001..003: a completion at the cursor. CC-007 suppression applies as in the CLI."""
+        ctx, index = build_context()
+        try:
+            path = None
+            if request.path:
+                try:
+                    path = ctx.workspace.resolve(request.path).relative.as_posix()
+                except (PermissionError, ValueError) as exc:
+                    raise HTTPException(status_code=403, detail=str(exc)) from exc
+            try:
+                adapter = select_model(request.model, TaskKind.COMPLETION, audit=ctx.audit).adapter
+            except (ModelError, PermissionError) as exc:
+                raise HTTPException(status_code=503, detail=f"model unavailable: {exc}") from exc
+            try:
+                answer = CodingAssistant(
+                    adapter,
+                    index,
+                    workspace_root=ctx.workspace.root,
+                    project_context=ProjectContextStore(ctx.workspace.root).load(),
+                ).complete(request.prefix, request.suffix, path=path, max_tokens=request.max_tokens)
+            except ModelError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            return {"completion": answer.text, "model": answer.model}
         finally:
             index.close()
 

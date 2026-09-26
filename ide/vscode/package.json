@@ -1,0 +1,119 @@
+{
+  "name": "aica-vscode",
+  "displayName": "AICA - Enterprise AI Coding Assistant",
+  "description": "The AICA agent in VS Code (INT-001): repository chat, completion, agent tasks with accept/reject, code review in the Problems panel, and approvals - all through a local `aica serve`.",
+  "version": "0.1.0",
+  "publisher": "aica-local",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "aica.setToken",
+        "title": "Set API Token",
+        "category": "AICA"
+      },
+      {
+        "command": "aica.checkConnection",
+        "title": "Check Connection",
+        "category": "AICA"
+      },
+      {
+        "command": "aica.ask",
+        "title": "Ask About the Repository",
+        "category": "AICA"
+      },
+      {
+        "command": "aica.explainSelection",
+        "title": "Explain Selection",
+        "category": "AICA"
+      },
+      {
+        "command": "aica.runTask",
+        "title": "Run Agent Task",
+        "category": "AICA"
+      },
+      {
+        "command": "aica.cancelTask",
+        "title": "Cancel Running Task",
+        "category": "AICA"
+      },
+      {
+        "command": "aica.reviewChanges",
+        "title": "Review Task Changes (Accept/Reject)",
+        "category": "AICA"
+      },
+      {
+        "command": "aica.reviewWorkingTree",
+        "title": "Review Working Tree",
+        "category": "AICA"
+      },
+      {
+        "command": "aica.approvals",
+        "title": "Pending Approvals",
+        "category": "AICA"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "aica.explainSelection",
+          "when": "editorHasSelection",
+          "group": "aica@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AICA",
+      "properties": {
+        "aica.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "Where `aica serve` listens. Keep it on loopback unless the server is deployed with TLS."
+        },
+        "aica.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model to request by name (MM-002). Empty lets the server's routing rules choose."
+        },
+        "aica.inlineCompletion.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Inline code completion (CC-001). Off by default: every pause in typing is a model call."
+        },
+        "aica.inlineCompletion.debounceMs": {
+          "type": "number",
+          "default": 400,
+          "minimum": 100,
+          "description": "Wait this long after typing stops before asking for a completion."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "test:unit": "npm run compile && node --test \"out/test/unit/*.test.js\"",
+    "test:integration": "npm run compile && node out/test/integration/runTests.js",
+    "package": "npm run compile && vsce package --no-dependencies --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
+    "typescript": "5.9.3"
+  }
+}
