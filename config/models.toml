@@ -143,6 +143,25 @@ status = "approved"
 enabled = true
 notes = "local Ollama, digest dae161e27b0e"
 
+# The first fine-tuned adapter (aica-coder@1, Entry 041) on the same local base, kept available
+# at the owner's request on 2026-09-27. It FAILED the promotion gates (1 of 9 golden tasks, all
+# three security tasks failed), so it is in no routing rule and no fallback chain: it answers
+# only when asked for by name (`--model aica-coder-1`), and pinned so it is never substituted.
+# Needs `ollama create aica-coder-1` from .aica/adapters/aica-coder/out (see BRIEFER.md).
+[[models]]
+name = "aica-coder-1"
+provider = "openai_compatible"
+family = "qwen"
+version = "aica-coder-1"
+base_url = "http://127.0.0.1:11434/v1"
+context_window = 4096
+capabilities = ["chat", "streaming", "tools"]
+timeout_seconds = 300.0
+status = "approved"
+enabled = true
+pinned = true
+notes = "fine-tuned qwen2.5-coder:7b (aica-coder@1); failed promotion gates; by name only"
+
 [[models]]
 name = "kimi"
 provider = "openai_compatible"
