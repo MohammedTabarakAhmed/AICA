@@ -231,3 +231,11 @@ label.grow { flex: 1; min-width: 200px; }
   .columns { grid-template-columns: 1fr; }
   main { padding: 12px; }
 }
+
+/* Ask: a conversation, oldest first. Answers keep their line breaks and code spacing. */
+.chat { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
+.turn { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.turn-user { background: var(--bg); }
+.turn-assistant { background: var(--surface); }
+.turn-head { margin-bottom: 4px; }
+.turn-text { white-space: pre-wrap; overflow-wrap: anywhere; }
