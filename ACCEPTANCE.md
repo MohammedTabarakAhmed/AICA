@@ -14,6 +14,12 @@ IDs prefixed `API-`, `NFR-`, `SEC-` and `LANG-` are not BRD-native; they are
 derived here from un-numbered BRD sections (15, 17, 16, 9.1) so those
 requirements are not lost. The BRD section is cited on each line.
 
+Some IDs describe one behaviour from several angles; each group maps to a single
+implementation, verified once and ticked together: cancel/stop (AG-006, UX-006,
+SAFE-008, API-004); final summary (AG-010, UX-009); diff display (FS-006, GIT-005,
+UX-004); pause/resume (AG-005, MEM-003, UX-006, API-005, NFR-002); reproducibility
+record (MM-012, MEM-006, EVAL-009); no false success (TEST-009, AG-009).
+
 ## Phase 0 — Foundation and Controls
 
 - [x] Repository/project structure established (`pyproject.toml`, `src/aica/{policy,safety,audit,workspace}`, `tests/`, `config/`, `scripts/`; 2026-09-22)

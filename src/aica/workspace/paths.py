@@ -1,4 +1,4 @@
-"""Authorized-workspace path guard (FS-001..FS-005, SECURITY_GUARDRAILS "Filesystem Safety").
+"""Authorized-workspace path guard (FS-001..FS-005).
 
 Every filesystem tool resolves its target through ``WorkspaceGuard`` before touching
 disk. Paths that escape the allowed directories (via ``..``, absolute paths or symlinks)
