@@ -15,6 +15,7 @@ const state = {
   task: null,
   stream: null,
   pollTimer: null,
+  view: "task",
 };
 
 // ------------------------------------------------------------------ helpers
@@ -139,11 +140,13 @@ function renderApprovalBanner(approvals) {
 
 // ------------------------------------------------------------------ views
 function showView(name) {
-  for (const view of ["task", "review", "approvals", "models"]) $(`view-${view}`).hidden = view !== name;
+  state.view = name;
+  for (const view of ["ask", "task", "review", "approvals", "models"]) $(`view-${view}`).hidden = view !== name;
   for (const button of document.querySelectorAll(".nav")) {
     button.classList.toggle("active", button.dataset.view === name);
   }
   if (name === "approvals") api("/approvals").then(renderApprovals).catch(() => {});
+  if (name === "ask") renderChat().catch((error) => showError($("ask-error"), error));
 }
 
 // ------------------------------------------------------------------ sessions
@@ -179,9 +182,69 @@ async function selectSession(id) {
   $("no-session").hidden = true;
   $("session-pane").hidden = false;
   $("task-detail").hidden = true;
-  showView("task");
+  // Stay on Ask when a session is picked from there; everything else opens its tasks.
+  showView(state.view === "ask" ? "ask" : "task");
   await loadSessions();
   await loadTasks();
+}
+
+// ------------------------------------------------------------------ ask (CHAT-001..005)
+async function renderChat() {
+  const log = $("chat-log");
+  if (!state.session) {
+    log.replaceChildren(el("li", { class: "muted" }, "No session selected: your first question starts one."));
+    return;
+  }
+  const session = await api(`/sessions/${encodeURIComponent(state.session)}`);
+  log.replaceChildren(
+    ...session.turns
+      .filter((t) => t.role === "user" || t.role === "assistant")
+      .map((t) =>
+        el(
+          "li",
+          { class: `turn turn-${t.role}` },
+          el("div", { class: "turn-head muted small-text" }, t.role === "user" ? "You" : `AICA${t.model ? " - " + t.model : ""}`),
+          el("div", { class: "turn-text" }, t.content),
+        ),
+      ),
+  );
+  if (!log.children.length) log.append(el("li", { class: "muted" }, "No questions in this session yet."));
+  log.lastElementChild.scrollIntoView({ block: "nearest" });
+}
+
+async function ask(event) {
+  event.preventDefault();
+  const error = $("ask-error");
+  showError(error, null);
+  const question = $("ask-text").value.trim();
+  if (!question) return;
+  const body = { question, depth: $("ask-depth").value };
+  if (state.session) body.session_id = state.session;
+  if ($("ask-model").value) body.model = $("ask-model").value;
+  const button = $("ask-form").querySelector("button[type=submit]");
+  button.disabled = true;
+  button.textContent = "Thinking...";
+  $("chat-log").append(
+    el("li", { class: "turn turn-user" }, el("div", { class: "turn-head muted small-text" }, "You"), el("div", { class: "turn-text" }, question)),
+  );
+  try {
+    const answer = await api("/chat", { method: "POST", body });
+    $("ask-text").value = "";
+    if (state.session !== answer.session_id) {
+      // The first question started a session: select it, so Tasks opens it too.
+      state.session = answer.session_id;
+      $("no-session").hidden = true;
+      $("session-pane").hidden = false;
+      await loadSessions();
+      await loadTasks();
+    }
+    await renderChat();
+  } catch (e) {
+    showError(error, e);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Ask";
+  }
 }
 
 async function loadTasks() {
@@ -204,10 +267,11 @@ async function loadTasks() {
 // ------------------------------------------------------------------ models (UX-007)
 async function loadModels() {
   const data = await api("/models?include_unusable=true");
-  const select = $("task-model");
-  select.replaceChildren(el("option", { value: "" }, "Routed automatically"));
-  for (const m of data.models.filter((m) => m.usable)) {
-    select.append(el("option", { value: m.name }, `${m.name} (${m.family} ${m.version})`));
+  for (const select of [$("task-model"), $("ask-model")]) {
+    select.replaceChildren(el("option", { value: "" }, "Routed automatically"));
+    for (const m of data.models.filter((m) => m.usable)) {
+      select.append(el("option", { value: m.name }, `${m.name} (${m.family} ${m.version})`));
+    }
   }
   $("models").replaceChildren(
     ...data.models.map((m) =>
@@ -643,6 +707,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("logout").addEventListener("click", () => signOut(""));
   $("new-session").addEventListener("click", () => createSession().catch(alertInline));
   $("task-form").addEventListener("submit", runTask);
+  $("ask-form").addEventListener("submit", ask);
   $("review-form").addEventListener("submit", runReview);
   $("btn-pause").addEventListener("click", () => control("pause"));
   $("btn-resume").addEventListener("click", () => control("resume"));

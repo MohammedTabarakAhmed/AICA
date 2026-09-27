@@ -39,6 +39,7 @@
       </div>
       <ul id="sessions" class="list"></ul>
       <div class="sidebar-nav">
+        <button data-view="ask" class="nav">Ask</button>
         <button data-view="task" class="nav active">Tasks</button>
         <button data-view="review" class="nav">Review</button>
         <button data-view="approvals" class="nav">Approvals <span id="approvals-count"></span></button>
@@ -109,6 +110,37 @@
               </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- CHAT-001..005: questions about the repository, answered with file:line sources. The
+           conversation belongs to the selected session, so a follow-up remembers it. -->
+      <section id="view-ask" class="view" hidden>
+        <div class="card">
+          <h3>Ask about the code</h3>
+          <p class="muted">Read-only: nothing is edited or run. Questions and answers are kept in
+            the selected session, so a follow-up can refer to what was said. With no session
+            selected, the first question starts a new one.</p>
+          <ol id="chat-log" class="chat"></ol>
+          <form id="ask-form">
+            <label for="ask-text">Question</label>
+            <textarea id="ask-text" rows="3" required placeholder="e.g. Where is the approval gate enforced?"></textarea>
+            <div class="row">
+              <label>Model
+                <select id="ask-model"><option value="">Routed automatically</option></select>
+              </label>
+              <label>Depth
+                <select id="ask-depth">
+                  <option value="normal">normal</option>
+                  <option value="shallow">shallow</option>
+                  <option value="deep">deep</option>
+                </select>
+              </label>
+              <div class="spacer"></div>
+              <button type="submit" class="primary">Ask</button>
+            </div>
+            <p id="ask-error" class="error" role="alert"></p>
+          </form>
         </div>
       </section>
 
