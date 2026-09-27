@@ -1166,7 +1166,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
             print(f"model unavailable: {exc}", file=sys.stderr)
             print("use --scripted to exercise the harness itself without a model", file=sys.stderr)
             return 3
-        factory = router_factory(router)
+        factory = router_factory(router, requested=requested)
         provenance = Provenance(
             model=selection.name,
             model_version=selection.version,
