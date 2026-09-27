@@ -681,7 +681,11 @@ def test_the_web_app_is_served_with_a_strict_content_security_policy(client: Tes
     assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert "unsafe-inline" not in csp
     assert page.headers["x-frame-options"] == "DENY"
-    assert client.get("/ui/app.js").status_code == 200
+    script = client.get("/ui/app.js")
+    assert script.status_code == 200
+    # Ask (CHAT-001..005) is on the page and sends the selected session, so it remembers.
+    assert 'id="view-ask"' in page.text and 'id="ask-form"' in page.text
+    assert '"/chat"' in script.text and "body.session_id = state.session" in script.text
     # The page itself embeds nothing from the workspace.
     assert "invoice" not in page.text
     assert client.get("/sessions").status_code == 401
