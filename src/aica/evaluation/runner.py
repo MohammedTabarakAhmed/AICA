@@ -86,10 +86,19 @@ def scripted_factory(task: GoldenTask) -> ModelAdapter:
     return ScriptedAdapter(list(task.scripted) or [NO_SCRIPT], name="scripted")
 
 
-def router_factory(router: ModelRouter, kind: TaskKind = TaskKind.PLANNING) -> ModelFactory:
-    """MM-004 + EVAL-006: the same routing rules the product uses, for every task."""
+def router_factory(
+    router: ModelRouter, kind: TaskKind = TaskKind.PLANNING, *, requested: str | None = None
+) -> ModelFactory:
+    """MM-004 + EVAL-006: the same routing rules the product uses, for every task.
+
+    A ``requested`` model is measured alone, with no fallback chain: a report that names it
+    must never contain another model's answers (found live: `--model` was recorded in the
+    report while the agent was served by the routing default).
+    """
 
     def factory(task: GoldenTask) -> ModelAdapter:
+        if requested is not None:
+            return router.gateway.get(requested)
         return router.select(kind).adapter
 
     return factory

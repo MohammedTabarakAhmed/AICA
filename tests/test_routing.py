@@ -434,6 +434,20 @@ def test_an_unavailable_model_falls_back_to_the_next_one() -> None:
     assert ("backup@backup-0001", Outcome.SUCCESS) in outcomes
 
 
+def test_an_evaluation_of_a_named_model_never_falls_back() -> None:
+    """EVAL-006: a report names the model it measured, so no other model may answer for it."""
+    from aica.evaluation.runner import router_factory
+
+    gw = two_models(responder({"primary": 503, "backup": "second"}))
+    factory = router_factory(router(gw), requested="primary")
+    adapter = factory(None)  # type: ignore[arg-type]  # the task does not affect the choice
+    with pytest.raises(ModelUnavailable):
+        adapter.chat([ChatMessage(role="user", content="hi")])
+
+    routed = router_factory(router(gw))(None)  # type: ignore[arg-type]
+    assert routed.chat([ChatMessage(role="user", content="hi")]).content == "second"
+
+
 @pytest.mark.parametrize("code", [500, 502, 503, 429, 408])
 def test_every_unavailability_code_triggers_the_fallback(code: int) -> None:
     gw = two_models(responder({"primary": code, "backup": "second"}))
