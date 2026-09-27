@@ -131,8 +131,14 @@ used only if the model scores better on an exam of problems it never saw.
   but is nowhere near good enough, and it failed all three security tasks, so the gates refused
   it and nothing served changed. That is the system working as intended. A second try needs more
   and harder practice tasks, or a bigger base model; decide before spending time on it.
-- **Left:** merge this work's PR once CI is green, then the remaining business sign-offs in
-  `ACCEPTANCE.md` (end-to-end scenarios the owner confirms). Kimi and DeepSeek stay deferred.
+- **Models today:** Groq stays the main brain. The fine-tuned model is registered as
+  `aica-coder-1`: used only when picked by name (`aica ask --model aica-coder-1 ...`), never
+  automatically, because it failed the security tasks.
+- **Paused here (2026-09-27)** at the owner's request. Left when work resumes: the business
+  sign-offs in `ACCEPTANCE.md` (end-to-end scenarios the owner confirms). Kimi and DeepSeek stay
+  deferred.
+- **Demo:** `aica serve --port 8765`, then open <http://127.0.0.1:8765/ui/> and paste the token
+  it prints (or set `AICA_API_TOKEN` first). Ollama must be running for the local models.
 
 ## When stuck
 

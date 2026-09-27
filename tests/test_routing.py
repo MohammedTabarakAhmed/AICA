@@ -656,8 +656,12 @@ def test_the_repository_registry_is_valid_and_declares_its_families() -> None:
         "groq-gpt-oss-120b",
         "groq-qwen3.8-27b",
         "qwen2.5-coder-7b",
+        "aica-coder-1",
     ]
     assert gw.default_name() == "deepseek-chat"
+    # The fine-tuned model failed its gates: usable by name only, never routed or substituted.
+    assert gw.config_for("aica-coder-1").pinned
+    assert "aica-coder-1" not in gw.routing.fallbacks
     # And the routing rules in that file resolve to models that exist.
     assert gw.routing.rule_for(TaskKind.PLANNING) is not None
 
