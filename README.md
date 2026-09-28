@@ -1,5 +1,12 @@
 # AICA — Enterprise AI Coding Assistant Agent
 
+**AICA** stands for **AI Coding Assistant**. It is an AI helper for programmers: it reads
+your code, answers questions about it, writes and fixes code, runs the tests, and asks
+a person before doing anything risky.
+
+Suggested GitHub repository name: **`aica-ai-coding-assistant`**. It keeps the short
+name AICA and says what it is.
+
 Implementation of the *Enhanced AI Coding Agent BRD v3*
 (`docs/brd/Enhanced_AI_Coding_Agent_BRD_Functional_v3.docx`).
 
