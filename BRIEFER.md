@@ -6,9 +6,8 @@ and what to do when stuck. The detail lives in:
 
 | File | What it is for |
 |---|---|
-| `CLAUDE.md` | the rules for how work is done here: safety, testing, Git |
 | `ACCEPTANCE.md` | every BRD requirement, ticked only when proven, plus test records |
-| `.claude-progress.md` | the decision log (why things were built the way they were) and the next action |
+| `PROGRESS.md` | the decision log (why things were built the way they were) and the next action |
 | `DEPENDENCIES.md` | every library used, and why it is allowed |
 | `README.md` | how to install `aica` and the main commands |
 | `training/kaggle/README.md` | the Kaggle training walkthrough |
@@ -160,7 +159,7 @@ used only if the model scores better on an exam of problems it never saw.
   `KAGGLE_USERNAME`, `KAGGLE_KEY`.
 - **Check before claiming anything:** `scripts\verify.cmd` (lint, format, types, all tests). CI
   runs the same on Linux and Windows for every pull request. Merge only when it is green.
-- **Shell quirk (for Claude Code sessions):** inline `python - <<'EOF'` scripts sometimes turn
+- **Shell quirk (for agent sessions):** inline `python - <<'EOF'` scripts sometimes turn
   `\n` inside strings into real line breaks. Put scripts with escapes in a scratch file, or use
   the Edit tool.
 - **Git:** work on a branch and open a PR. Deleting remote branches is blocked by the

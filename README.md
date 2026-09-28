@@ -9,9 +9,8 @@ GitHub repository: **`AICA`**.
 Implementation of the *Enhanced AI Coding Agent BRD v3*
 (`docs/brd/Enhanced_AI_Coding_Agent_BRD_Functional_v3.docx`).
 
-Start with `BRIEFER.md` (a plain-English map of the project and where it stands), then
-`CLAUDE.md` (how work is done here). Requirement tracking lives in `ACCEPTANCE.md`; the
-decision log and next action in `.claude-progress.md`.
+Start with `BRIEFER.md` (a plain-English map of the project and where it stands). Requirement tracking lives in `ACCEPTANCE.md`; the
+decision log and next action in `PROGRESS.md`.
 
 ## Repository layout
 
@@ -96,7 +95,7 @@ completed. New, untracked files are included by default; nothing is ever written
 ## Local development (Windows / CMD or PowerShell)
 
 Python 3.12+ is required (3.14 verified). A project-local virtual environment is
-mandatory (`CLAUDE.md` section 8):
+mandatory:
 
 ```cmd
 python -m venv .venv
@@ -137,7 +136,7 @@ refused with HTTP 409 exactly as it is refused at the prompt.
 
 ## Verification commands
 
-Run all of these before claiming any task complete (`CLAUDE.md` section 9):
+Run all of these before claiming any task complete:
 
 ```cmd
 ruff check src tests

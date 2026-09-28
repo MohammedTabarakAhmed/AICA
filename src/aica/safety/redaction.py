@@ -1,4 +1,4 @@
-"""Secret redaction (SAFE-006, CC-007, CLAUDE.md section 7).
+"""Secret redaction (SAFE-006, CC-007).
 
 Applied to anything that leaves a trust boundary: audit records, logs, progress files,
 error reports and model context. Pattern-based; tuned for low false negatives on the

@@ -35,7 +35,6 @@ node_modules/
 Thumbs.db
 
 # Tool state
-.claude/settings.local.json
 .aica/
 
 # Local database configuration: real connection targets, never committed.

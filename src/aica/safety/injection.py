@@ -1,4 +1,4 @@
-"""Prompt-injection defense baseline (SAFE-007, CLAUDE.md section 6).
+"""Prompt-injection defense baseline (SAFE-007).
 
 Two mechanisms:
 
