@@ -4,13 +4,7 @@
 your code, answers questions about it, writes and fixes code, runs the tests, and asks
 a person before doing anything risky.
 
-GitHub repository: **`AICA`**.
-
-Implementation of the *Enhanced AI Coding Agent BRD v3*
-(`docs/brd/Enhanced_AI_Coding_Agent_BRD_Functional_v3.docx`).
-
-Start with `BRIEFER.md` (a plain-English map of the project and where it stands). Requirement tracking lives in `ACCEPTANCE.md`; the
-decision log and next action in `PROGRESS.md`.
+Start with `BRIEFER.md`, a plain-English map of the project and where it stands.
 
 ## Repository layout
 
@@ -30,7 +24,7 @@ src/aica/chat/         sessions/memory, assistant, log diagnostics, commit messa
 src/aica/agent/        the agent loop: plan, execute, observe, adapt, report; subagents (AG-001..010)
 src/aica/review/       code and security review of a change (REV-001..007)
 src/aica/evaluation/   golden tasks, metrics, release gates (EVAL-001..009)
-src/aica/adaptation/   fine-tuning data, datasets, training jobs, adapters and promotion (BRD 13)
+src/aica/adaptation/   fine-tuning data, datasets, training jobs, adapters and promotion
 src/aica/admin/        RBAC, approval queue, controls, usage, retention (ADM-*, SEC-*)
 src/aica/database/     SQL classification, dialects, connections, migrations (DB-001..007)
 src/aica/mcp/          MCP client: stdio JSON-RPC, handshake, tool discovery (MCP-001/007)
@@ -42,7 +36,6 @@ ide/vscode/            the VS Code extension (INT-001)
 evaluation/tasks/      golden tasks: the exam; evaluation/training/ holds the practice tasks
 training/kaggle/       the QLoRA notebook and the Kaggle walkthrough
 tests/                 unit suite; tests/integration/ is the cross-module suite
-docs/brd/              the BRD (functional source of truth)
 scripts/verify.*       one-shot lint + format + type + test run
 ```
 

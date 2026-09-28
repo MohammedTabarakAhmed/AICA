@@ -6,12 +6,8 @@ and what to do when stuck. The detail lives in:
 
 | File | What it is for |
 |---|---|
-| `ACCEPTANCE.md` | every BRD requirement, ticked only when proven, plus test records |
-| `PROGRESS.md` | the decision log (why things were built the way they were) and the next action |
-| `DEPENDENCIES.md` | every library used, and why it is allowed |
 | `README.md` | how to install `aica` and the main commands |
 | `training/kaggle/README.md` | the Kaggle training walkthrough |
-| `docs/brd/*.docx` | the BRD: what the product must do (the source of truth) |
 
 ## What AICA is
 
@@ -134,7 +130,7 @@ used only if the model scores better on an exam of problems it never saw.
   `aica-coder-1`: used only when picked by name (`aica ask --model aica-coder-1 ...`), never
   automatically, because it failed the security tasks.
 - **Paused here (2026-09-27)** at the owner's request. Left when work resumes: the business
-  sign-offs in `ACCEPTANCE.md` (end-to-end scenarios the owner confirms). Kimi and DeepSeek stay
+  sign-offs (end-to-end scenarios the owner confirms). Kimi and DeepSeek stay
   deferred.
 - **Demo:** `aica serve --port 8765`, then open <http://127.0.0.1:8765/ui/> and paste the token
   it prints (or set `AICA_API_TOKEN` first). Ollama must be running for the local models.

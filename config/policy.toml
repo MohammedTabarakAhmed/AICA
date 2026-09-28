@@ -161,7 +161,7 @@ enabled = false
 # it during an incident. Owning does NOT grant `approve`: owning a repository and being
 # entitled to wave through a destructive command are different things.
 name = "Enhanced AI Coding Agent"
-description = "Enterprise AI coding assistant agent (BRD v3)"
+description = "Enterprise AI coding assistant agent"
 repository = ""
 owners = []
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aica"
 version = "0.0.1"
-description = "Enterprise AI Coding Assistant Agent (implementation of the Enhanced AI Coding Agent BRD v3)"
+description = "Enterprise AI Coding Assistant Agent"
 requires-python = ">=3.12"
 readme = "README.md"
 dependencies = [
